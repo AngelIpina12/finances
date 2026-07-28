@@ -20,6 +20,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
               <a href="/investments" className="hover:text-black dark:hover:text-white">Investments</a>
               <a href="/loans" className="hover:text-black dark:hover:text-white">Loans</a>
               <a href="/recurring" className="hover:text-black dark:hover:text-white">Recurring</a>
+              <a href="/categories" className="hover:text-black dark:hover:text-white">Categories</a>
             </nav>
           </div>
         </header>

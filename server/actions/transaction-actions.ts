@@ -43,9 +43,10 @@ export async function getTransactions(options?: {
 export async function createTransaction(data: {
   accountId: string;
   type: "income" | "expense" | "transfer";
+  categoryId?: string;
   amount: string;
-  category?: string;
   description?: string;
+  tagIds?: string[];
   date?: Date;
   transferAccountId?: string;
 }): Promise<Transaction> {
@@ -57,7 +58,7 @@ export async function createTransaction(data: {
     throw new Error(parsed.error.issues[0].message);
   }
 
-  const { accountId, type, amount, category, description, date, transferAccountId } = parsed.data;
+  const { accountId, type, categoryId, amount, description, tagIds, date, transferAccountId } = parsed.data;
   const amountDecimal = new Decimal(amount);
 
   // Validate transfer has destination account
@@ -110,6 +111,9 @@ export async function createTransaction(data: {
     .set({ balance: newSourceBalance.toString(), updatedAt: new Date() })
     .where(eq(accounts.id, accountId));
 
+  // Convert tagIds array to comma-separated string
+  const tagIdsString = tagIds && tagIds.length > 0 ? tagIds.join(',') : null;
+
   // Insert transaction
   const [newTransaction] = await drizzleDb
     .insert(transactions)
@@ -117,9 +121,10 @@ export async function createTransaction(data: {
       userId: session.user.id,
       accountId,
       type,
+      categoryId: categoryId || null,
       amount,
-      category,
       description,
+      tagIds: tagIdsString,
       date: date || new Date(),
     })
     .returning();

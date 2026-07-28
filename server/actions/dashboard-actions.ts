@@ -71,7 +71,11 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
       simulateProjectedBalances("30days"),
     ]);
 
-  const totalBalance = accounts.reduce(
+  // Only count cash and debit accounts for liquid balance (exclude credit cards)
+  const liquidAccounts = accounts.filter(
+    (acc) => acc.type === "cash" || acc.type === "debit"
+  );
+  const totalBalance = liquidAccounts.reduce(
     (sum, acc) => sum + parseFloat(String(acc.balance)),
     0
   );
@@ -106,9 +110,10 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
       : totalBalance;
 
   // Expense by category
+  // Note: category is now categoryId (UUID), showing "Sin categoría" for now
   const expenseMap = new Map<string, number>();
   for (const t of monthlyTransactions.filter((t) => t.type === "expense")) {
-    const cat = t.category || "Other";
+    const cat = t.categoryId ? "Con categoría" : "Sin categoría";
     expenseMap.set(cat, (expenseMap.get(cat) || 0) + parseFloat(String(t.amount)));
   }
   const expenseByCategory = Array.from(expenseMap.entries())

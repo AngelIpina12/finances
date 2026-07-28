@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Loader2, Plus, ArrowUpCircle, ArrowDownCircle, ArrowRightCircle, Trash2 } from "lucide-react";
+import { Loader2, Plus, ArrowUpCircle, ArrowDownCircle, Trash2, ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,14 +23,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -38,6 +36,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { z } from "zod";
 import {
   createTransaction,
@@ -45,32 +46,34 @@ import {
   getTransactions,
 } from "@/server/actions/transaction-actions";
 import { getAccounts } from "@/server/actions/account-actions";
-import type { Transaction, Account } from "@/lib/db/schema";
+import { getCategories } from "@/server/actions/category-actions";
+import { getTagsByCategory } from "@/server/actions/tag-actions";
+import type { Transaction, Account, Category, Tag } from "@/lib/db/schema";
 import { format } from "date-fns";
-import { CATEGORIES } from "@/types/forms";
+import { CalendarIcon } from "lucide-react";
 
 const transactionFormSchema = z.object({
-  accountId: z.string().min(1, "Account is required"),
-  type: z.enum(["income", "expense", "transfer"]),
-  amount: z.string().min(1, "Amount is required"),
-  category: z.string().optional(),
+  accountId: z.string().min(1, "La cuenta es requerida"),
+  type: z.enum(["income", "expense"]),
+  categoryId: z.string().min(1, "La categoría es requerida"),
+  amount: z.string().min(1, "El monto es requerido"),
   description: z.string().optional(),
+  tagIds: z.array(z.string()).optional(),
   date: z.date(),
-  transferAccountId: z.string().optional(),
 });
 
 type TransactionFormData = z.infer<typeof transactionFormSchema>;
 
+type TransactionStep = "type" | "category" | "form";
+
 const TYPE_COLORS: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   income: "default",
   expense: "destructive",
-  transfer: "secondary",
 };
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
   income: <ArrowUpCircle className="h-4 w-4 text-green-500" />,
   expense: <ArrowDownCircle className="h-4 w-4 text-red-500" />,
-  transfer: <ArrowRightCircle className="h-4 w-4 text-blue-500" />,
 };
 
 function formatCurrency(amount: string): string {
@@ -84,35 +87,44 @@ function formatCurrency(amount: string): string {
 export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [categoryTags, setCategoryTags] = useState<Record<string, Tag[]>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [filterAccountId, setFilterAccountId] = useState<string>("all");
   const [filterType, setFilterType] = useState<string>("all");
-  const [isSheetOpen, setIsSheetOpen] = useState(false);
+
+  // Modal state - 3 step flow
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalStep, setModalStep] = useState<TransactionStep>("type");
+  const [selectedType, setSelectedType] = useState<"income" | "expense" | null>(null);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
 
   const form = useForm<TransactionFormData>({
     resolver: zodResolver(transactionFormSchema),
     defaultValues: {
       accountId: "",
       type: "expense",
+      categoryId: "",
       amount: "",
-      category: "",
       description: "",
+      tagIds: [],
       date: new Date(),
-      transferAccountId: "",
     },
   });
 
   async function fetchData() {
     try {
       setIsLoading(true);
-      const [txnsData, accntsData] = await Promise.all([
+      const [txnsData, accntsData, catsData] = await Promise.all([
         getTransactions(),
         getAccounts(),
+        getCategories(),
       ]);
       setTransactions(txnsData);
       setAccounts(accntsData);
+      setCategories(catsData);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
@@ -125,12 +137,34 @@ export default function TransactionsPage() {
     fetchData();
   }, []);
 
+  // Fetch tags when category is selected
+  useEffect(() => {
+    async function fetchTags() {
+      if (selectedCategoryId) {
+        try {
+          const tags = await getTagsByCategory(selectedCategoryId);
+          setCategoryTags((prev) => ({ ...prev, [selectedCategoryId!]: tags }));
+        } catch (err) {
+          console.error("Failed to fetch tags:", err);
+        }
+      }
+    }
+    fetchTags();
+  }, [selectedCategoryId]);
+
   async function onSubmit(data: TransactionFormData) {
     try {
       setIsSubmitting(true);
-      await createTransaction(data);
-      form.reset();
-      setIsSheetOpen(false);
+      await createTransaction({
+        accountId: data.accountId,
+        type: data.type,
+        categoryId: data.categoryId,
+        amount: data.amount,
+        description: data.description,
+        tagIds: data.tagIds,
+        date: data.date,
+      });
+      closeModal();
       await fetchData();
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to create transaction");
@@ -148,6 +182,46 @@ export default function TransactionsPage() {
       alert(err instanceof Error ? err.message : "Failed to delete transaction");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  function closeModal() {
+    setIsModalOpen(false);
+    setModalStep("type");
+    setSelectedType(null);
+    setSelectedCategoryId(null);
+    form.reset({
+      accountId: "",
+      type: "expense",
+      categoryId: "",
+      amount: "",
+      description: "",
+      tagIds: [],
+      date: new Date(),
+    });
+  }
+
+  function handleTypeSelect(type: "income" | "expense") {
+    setSelectedType(type);
+    form.setValue("type", type);
+    setModalStep("category");
+  }
+
+  function handleCategorySelect(categoryId: string) {
+    setSelectedCategoryId(categoryId);
+    form.setValue("categoryId", categoryId);
+    setModalStep("form");
+  }
+
+  function handleTagToggle(tagId: string) {
+    const currentTags = form.getValues("tagIds") || [];
+    if (currentTags.includes(tagId)) {
+      form.setValue(
+        "tagIds",
+        currentTags.filter((id) => id !== tagId)
+      );
+    } else {
+      form.setValue("tagIds", [...currentTags, tagId]);
     }
   }
 
@@ -172,6 +246,18 @@ export default function TransactionsPage() {
     return account?.name || "Unknown";
   };
 
+  const getCategoryName = (categoryId: string | null) => {
+    if (!categoryId) return "Sin categoría";
+    const category = categories.find((c) => c.id === categoryId);
+    return category?.name || "Sin categoría";
+  };
+
+  const filteredCategories = categories.filter(
+    (cat) => cat.type === selectedType && !cat.parentId
+  );
+
+  const currentTags = selectedCategoryId ? categoryTags[selectedCategoryId] || [] : [];
+
   if (isLoading) {
     return (
       <div className="flex h-[50vh] items-center justify-center">
@@ -183,30 +269,170 @@ export default function TransactionsPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Transactions</h1>
-        <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
-          <SheetTrigger asChild>
-            <Button>
-              <Plus className="mr-2 h-4 w-4" />
-              Add Transaction
-            </Button>
-          </SheetTrigger>
-          <SheetContent>
-            <SheetHeader>
-              <SheetTitle>New Transaction</SheetTitle>
-              <SheetDescription>
-                Record an income, expense, or transfer.
-              </SheetDescription>
-            </SheetHeader>
+        <h1 className="text-3xl font-bold">Transacciones</h1>
+        <Button onClick={() => setIsModalOpen(true)}>
+          <Plus className="mr-2 h-4 w-4" />
+          Agregar Transacción
+        </Button>
+      </div>
+
+      {error && (
+        <div className="rounded-lg bg-red-50 p-4 text-red-500 dark:bg-red-900/20">
+          {error}
+        </div>
+      )}
+
+      {/* Transaction Modal - 3 Step Flow */}
+      <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {modalStep === "type"
+                ? "Nueva Transacción"
+                : modalStep === "category"
+                ? "Selecciona una Categoría"
+                : "Completar Transacción"}
+            </DialogTitle>
+            <DialogDescription>
+              {modalStep === "type"
+                ? "¿Es un ingreso o un egreso?"
+                : modalStep === "category"
+                ? `Categorías de ${selectedType === "income" ? "ingreso" : "egreso"}`
+                : "Completa los datos de la transacción."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Step 1: Type Selection */}
+          {modalStep === "type" && (
+            <div className="grid grid-cols-2 gap-4 py-4">
+              <button
+                type="button"
+                onClick={() => handleTypeSelect("income")}
+                className="flex flex-col items-center justify-center rounded-lg border-2 border-border p-8 hover:border-green-500 hover:bg-green-50 dark:hover:bg-green-900/20 transition-colors"
+              >
+                <ArrowUpCircle className="h-12 w-12 text-green-500 mb-3" />
+                <span className="text-lg font-medium">Ingreso</span>
+                <span className="text-sm text-muted-foreground mt-1">
+                  Dinero que recibes
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTypeSelect("expense")}
+                className="flex flex-col items-center justify-center rounded-lg border-2 border-border p-8 hover:border-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+              >
+                <ArrowDownCircle className="h-12 w-12 text-red-500 mb-3" />
+                <span className="text-lg font-medium">Egreso</span>
+                <span className="text-sm text-muted-foreground mt-1">
+                  Dinero que gastas
+                </span>
+              </button>
+            </div>
+          )}
+
+          {/* Step 2: Category Selection */}
+          {modalStep === "category" && (
+            <div className="py-4">
+              <Button
+                variant="ghost"
+                onClick={() => setModalStep("type")}
+                className="mb-4"
+              >
+                ← Volver
+              </Button>
+              {filteredCategories.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground mb-2">
+                    No hay categorías de {selectedType === "income" ? "ingreso" : "egreso"}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Crea una categoría primero.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  {filteredCategories.map((category) => (
+                    <button
+                      key={category.id}
+                      type="button"
+                      onClick={() => handleCategorySelect(category.id)}
+                      className="flex items-center gap-3 p-4 rounded-lg border-2 border-border hover:border-primary hover:bg-accent transition-colors text-left"
+                    >
+                      <div
+                        className="h-10 w-10 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ backgroundColor: category.color || "#3B82F6" }}
+                      >
+                        {category.iconUrl ? (
+                          <img
+                            src={category.iconUrl}
+                            alt={category.name}
+                            className="h-6 w-6 object-contain"
+                          />
+                        ) : (
+                          <span className="text-lg">
+                            {category.type === "income" ? "📈" : "📉"}
+                          </span>
+                        )}
+                      </div>
+                      <span className="font-medium">{category.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Step 3: Transaction Form */}
+          {modalStep === "form" && (
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 py-4">
+              {/* Category display */}
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted">
+                <div
+                  className="h-8 w-8 rounded-md flex items-center justify-center"
+                  style={{
+                    backgroundColor:
+                      categories.find((c) => c.id === selectedCategoryId)?.color ||
+                      "#3B82F6",
+                  }}
+                >
+                  {selectedCategoryId &&
+                  categories.find((c) => c.id === selectedCategoryId)?.iconUrl ? (
+                    <img
+                      src={
+                        categories.find((c) => c.id === selectedCategoryId)?.iconUrl!
+                      }
+                      alt=""
+                      className="h-5 w-5 object-contain"
+                    />
+                  ) : (
+                    <span className="text-sm">
+                      {selectedType === "income" ? "📈" : "📉"}
+                    </span>
+                  )}
+                </div>
+                <span className="font-medium">
+                  {getCategoryName(selectedCategoryId)}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto"
+                  onClick={() => setModalStep("category")}
+                >
+                  Cambiar
+                </Button>
+              </div>
+
+              {/* Account */}
               <div className="space-y-2">
-                <Label>Account</Label>
+                <Label>Cuenta</Label>
                 <Select
                   onValueChange={(value) => form.setValue("accountId", value)}
                   defaultValue={form.getValues("accountId")}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select account" />
+                    <SelectValue placeholder="Seleccionar cuenta" />
                   </SelectTrigger>
                   <SelectContent>
                     {accounts.map((account) => (
@@ -223,27 +449,9 @@ export default function TransactionsPage() {
                 )}
               </div>
 
+              {/* Amount */}
               <div className="space-y-2">
-                <Label>Type</Label>
-                <Select
-                  onValueChange={(value) =>
-                    form.setValue("type", value as TransactionFormData["type"])
-                  }
-                  defaultValue={form.getValues("type")}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="income">Income</SelectItem>
-                    <SelectItem value="expense">Expense</SelectItem>
-                    <SelectItem value="transfer">Transfer</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="amount">Amount</Label>
+                <Label htmlFor="amount">Monto</Label>
                 <Input
                   id="amount"
                   type="number"
@@ -258,88 +466,105 @@ export default function TransactionsPage() {
                 )}
               </div>
 
-              {form.watch("type") === "transfer" && (
-                <div className="space-y-2">
-                  <Label>To Account</Label>
-                  <Select
-                    onValueChange={(value) => form.setValue("transferAccountId", value)}
-                    defaultValue={form.getValues("transferAccountId")}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select destination account" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accounts
-                        .filter((a) => a.id !== form.getValues("accountId"))
-                        .map((account) => (
-                          <SelectItem key={account.id} value={account.id}>
-                            {account.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
+              {/* Description */}
               <div className="space-y-2">
-                <Label>Category</Label>
-                <Select
-                  value={form.watch("category") || ""}
-                  onValueChange={(value) => form.setValue("category", value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select category" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CATEGORIES.map((cat) => (
-                      <SelectItem key={cat} value={cat}>
-                        {cat}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
+                <Label htmlFor="description">Descripción (Opcional)</Label>
                 <Input
                   id="description"
-                  placeholder="Optional description"
+                  placeholder="Agregar una descripción..."
                   {...form.register("description")}
                 />
               </div>
 
-              <SheetFooter>
+              {/* Tags */}
+              {currentTags.length > 0 && (
+                <div className="space-y-2">
+                  <Label>Etiquetas</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {currentTags.map((tag) => {
+                      const isSelected = (form.getValues("tagIds") || []).includes(
+                        tag.id
+                      );
+                      return (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          onClick={() => handleTagToggle(tag.id)}
+                          className={cn(
+                            "px-3 py-1 rounded-full text-sm transition-colors",
+                            isSelected
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                          )}
+                        >
+                          {tag.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Date */}
+              <div className="space-y-2">
+                <Label>Fecha</Label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        "w-full justify-start text-left font-normal",
+                        !form.watch("date") && "text-muted-foreground"
+                      )}
+                    >
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      {form.watch("date") ? (
+                        format(form.watch("date"), "PPP")
+                      ) : (
+                        <span>Seleccionar fecha</span>
+                      )}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar
+                      mode="single"
+                      selected={form.watch("date")}
+                      onSelect={(date) => {
+                        if (date) {
+                          form.setValue("date", date, { shouldDirty: true });
+                        }
+                      }}
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-4">
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setIsSheetOpen(false)}
+                  onClick={closeModal}
+                  disabled={isSubmitting}
                 >
-                  Cancel
+                  Cancelar
                 </Button>
                 <Button type="submit" disabled={isSubmitting}>
                   {isSubmitting && (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   )}
-                  Create
+                  Crear Transacción
                 </Button>
-              </SheetFooter>
+              </div>
             </form>
-          </SheetContent>
-        </Sheet>
-      </div>
-
-      {error && (
-        <div className="rounded-lg bg-red-50 p-4 text-red-500 dark:bg-red-900/20">
-          {error}
-        </div>
-      )}
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Summary Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Income</CardTitle>
+            <CardTitle className="text-sm font-medium">Total Ingresos</CardTitle>
             <ArrowUpCircle className="h-4 w-4 text-green-500" />
           </CardHeader>
           <CardContent>
@@ -350,7 +575,7 @@ export default function TransactionsPage() {
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Expenses</CardTitle>
+            <CardTitle className="text-sm font-medium">Total Egresos</CardTitle>
             <ArrowDownCircle className="h-4 w-4 text-red-500" />
           </CardHeader>
           <CardContent>
@@ -361,7 +586,7 @@ export default function TransactionsPage() {
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Net</CardTitle>
+            <CardTitle className="text-sm font-medium">Neto</CardTitle>
           </CardHeader>
           <CardContent>
             <p
@@ -384,10 +609,10 @@ export default function TransactionsPage() {
           onValueChange={setFilterAccountId}
         >
           <SelectTrigger className="w-[200px]">
-            <SelectValue placeholder="Filter by account" />
+            <SelectValue placeholder="Filtrar por cuenta" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Accounts</SelectItem>
+            <SelectItem value="all">Todas las Cuentas</SelectItem>
             {accounts.map((account) => (
               <SelectItem key={account.id} value={account.id}>
                 {account.name}
@@ -398,13 +623,12 @@ export default function TransactionsPage() {
 
         <Select value={filterType} onValueChange={setFilterType}>
           <SelectTrigger className="w-[150px]">
-            <SelectValue placeholder="Filter by type" />
+            <SelectValue placeholder="Filtrar por tipo" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Types</SelectItem>
-            <SelectItem value="income">Income</SelectItem>
-            <SelectItem value="expense">Expense</SelectItem>
-            <SelectItem value="transfer">Transfer</SelectItem>
+            <SelectItem value="all">Todos los Tipos</SelectItem>
+            <SelectItem value="income">Ingreso</SelectItem>
+            <SelectItem value="expense">Egreso</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -414,7 +638,7 @@ export default function TransactionsPage() {
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
             <p className="mb-4 text-sm text-muted-foreground">
-              No transactions yet
+              No hay transacciones
             </p>
           </CardContent>
         </Card>
@@ -423,12 +647,12 @@ export default function TransactionsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Account</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Description</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
+                <TableHead>Fecha</TableHead>
+                <TableHead>Cuenta</TableHead>
+                <TableHead>Tipo</TableHead>
+                <TableHead>Categoría</TableHead>
+                <TableHead>Descripción</TableHead>
+                <TableHead className="text-right">Monto</TableHead>
                 <TableHead className="w-[50px]"></TableHead>
               </TableRow>
             </TableHeader>
@@ -442,12 +666,10 @@ export default function TransactionsPage() {
                   <TableCell>
                     <Badge variant={TYPE_COLORS[txn.type]}>
                       <span className="mr-1">{TYPE_ICONS[txn.type]}</span>
-                      {txn.type.charAt(0).toUpperCase() + txn.type.slice(1)}
+                      {txn.type === "income" ? "Ingreso" : "Egreso"}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {txn.category || "—"}
-                  </TableCell>
+                  <TableCell>{getCategoryName(txn.categoryId)}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {txn.description || "—"}
                   </TableCell>

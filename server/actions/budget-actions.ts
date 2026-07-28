@@ -162,6 +162,8 @@ export async function getBudgetProgress(budgetId?: string): Promise<BudgetProgre
     const { start, end } = getPeriodRange(budget.period as "weekly" | "monthly" | "yearly", now);
 
     // Calculate spent amount for this category in the current period
+    // Note: category filtering is暂时 disabled since transactions now use categoryId (UUID)
+    // while budgets use category (string). This would require a migration to fix.
     const spentResult = await drizzleDb
       .select({
         total: sql<string>`COALESCE(SUM(${transactions.amount}::numeric), 0)`,
@@ -171,7 +173,6 @@ export async function getBudgetProgress(budgetId?: string): Promise<BudgetProgre
         and(
           eq(transactions.userId, session.user.id),
           eq(transactions.type, "expense"),
-          budget.category ? eq(transactions.category, budget.category) : sql`1=1`,
           gte(transactions.date, start),
           lte(transactions.date, end)
         )

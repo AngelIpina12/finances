@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { registerSchema } from '@/types/forms';
 
@@ -76,10 +77,26 @@ export default function RegisterPage() {
                 {errors.form}
               </div>
             )}
-            <Input label="Full Name" name="name" type="text" placeholder="John Doe" error={errors.name} required />
-            <Input label="Email" name="email" type="email" placeholder="you@example.com" error={errors.email} required />
-            <Input label="Password" name="password" type="password" placeholder="Create a strong password" error={errors.password} required />
-            <Input label="Confirm Password" name="confirmPassword" type="password" placeholder="Confirm your password" error={errors.confirmPassword} required />
+            <div className="space-y-2">
+              <Label htmlFor="name">Full Name</Label>
+              <Input id="name" name="name" type="text" placeholder="John Doe" required />
+              {errors.name && <p className="text-sm text-red-500">{errors.name}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input id="email" name="email" type="email" placeholder="you@example.com" required />
+              {errors.email && <p className="text-sm text-red-500">{errors.email}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input id="password" name="password" type="password" placeholder="Create a strong password" required />
+              {errors.password && <p className="text-sm text-red-500">{errors.password}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword">Confirm Password</Label>
+              <Input id="confirmPassword" name="confirmPassword" type="password" placeholder="Confirm your password" required />
+              {errors.confirmPassword && <p className="text-sm text-red-500">{errors.confirmPassword}</p>}
+            </div>
             <Button type="submit" disabled={isLoading}>
               {isLoading ? 'Creating account...' : 'Create Account'}
             </Button>

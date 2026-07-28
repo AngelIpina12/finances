@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { loginSchema } from '@/types/forms';
 
@@ -66,8 +67,16 @@ export default function LoginPage() {
                 {errors.form}
               </div>
             )}
-            <Input label="Email" name="email" type="email" placeholder="you@example.com" error={errors.email} required />
-            <Input label="Password" name="password" type="password" placeholder="Enter your password" error={errors.password} required />
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input id="email" name="email" type="email" placeholder="you@example.com" required />
+              {errors.email && <p className="text-sm text-red-500">{errors.email}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input id="password" name="password" type="password" placeholder="Enter your password" required />
+              {errors.password && <p className="text-sm text-red-500">{errors.password}</p>}
+            </div>
             <Button type="submit" disabled={isLoading}>
               {isLoading ? 'Signing in...' : 'Sign In'}
             </Button>
