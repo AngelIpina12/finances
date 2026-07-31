@@ -116,7 +116,7 @@ export async function createRecurringPayment(data: {
   let nextPaymentDate: Date;
   if (data.paymentType === "by_term" && data.typeSpecific.firstBillDate) {
     const firstBillDate = new Date(data.typeSpecific.firstBillDate);
-    const [hours, minutes] = data.cycleConfig.time.split(':').map(Number);
+    const [hours, minutes] = data.cycleConfig.time?.split(':').map(Number) || [0, 0];
     const now = new Date();
 
     // If firstBillDate is in the future, that's the next payment
@@ -140,7 +140,7 @@ export async function createRecurringPayment(data: {
     }
   } else if (data.paymentType === "subscription" && data.typeSpecific.paymentDay) {
     // For subscriptions, use paymentDay (day of month 1-31)
-    const [hours, minutes] = data.cycleConfig.time.split(':').map(Number);
+    const [hours, minutes] = data.cycleConfig.time?.split(':').map(Number) || [0, 0];
     const now = new Date();
     const paymentDay = data.typeSpecific.paymentDay;
 
@@ -332,26 +332,28 @@ async function createPastTransactionsForByTerm(payment: RecurringPayment): Promi
   const now = new Date();
   const [hours, minutes] = (payment.cycleConfig as CycleConfig)?.time?.split(':').map(Number) || [0, 0];
 
-  // Calculate how many payments have already passed (including today)
-  let paymentCount = 0;
+  // Calculate how many payments have already passed
+  // First payment is at firstBillDate, second at firstBillDate + 1 month, etc.
+  let pastPayments = 0;
   let currentPaymentDate = new Date(firstBillDate);
 
-  while (currentPaymentDate <= now && paymentCount < totalPayments) {
-    paymentCount++;
-    currentPaymentDate = addMonths(firstBillDate, paymentCount);
+  // If firstBillDate is in the future, no past payments yet
+  if (firstBillDate > now) {
+    pastPayments = 0;
+  } else {
+    // Count how many payment dates have passed (including firstBillDate if it's in the past)
+    while (currentPaymentDate <= now && pastPayments < totalPayments) {
+      pastPayments++;
+      currentPaymentDate = addMonths(firstBillDate, pastPayments);
+    }
   }
-
-  // paymentCount now contains the number of payments that should have been made
-  // We need paymentCount - 1 past transactions (the current one at index 0 already counts)
-  const pastPayments = paymentCount - 1;
 
   if (pastPayments <= 0) {
     return;
   }
 
   // Calculate owedAmount: totalAmount - (monthlyAmount * paymentsMade)
-  const paymentsMade = paymentCount - 1;
-  const amountPaid = monthlyAmount.times(paymentsMade);
+  const amountPaid = monthlyAmount.times(pastPayments);
   const owedAmount = new Decimal(typeSpecific.totalAmount).minus(amountPaid);
 
   const tagIdsString = typeSpecific.tagIds && typeSpecific.tagIds.length > 0
@@ -359,8 +361,9 @@ async function createPastTransactionsForByTerm(payment: RecurringPayment): Promi
     : null;
 
   // Create transactions for each past payment
+  // First payment is at firstBillDate (i=0), second at firstBillDate + 1 month (i=1), etc.
   for (let i = 0; i < pastPayments; i++) {
-    const paymentDate = addMonths(firstBillDate, i + 1);
+    const paymentDate = addMonths(firstBillDate, i);
     const paymentDateWithTime = setHours(setMinutes(paymentDate, minutes), hours);
 
     // Create the transaction
@@ -526,7 +529,7 @@ export async function toggleRecurringPayment(id: string): Promise<RecurringPayme
 
 // Calculate next payment date based on cycle config
 function calculateNextPaymentDateFromConfig(currentDate: Date, config: CycleConfig): Date {
-  const [hours, minutes] = config.time.split(':').map(Number);
+  const [hours, minutes] = config.time?.split(':').map(Number) || [0, 0];
   let nextDate = new Date(currentDate);
 
   // Check if this payment uses perMonthDays (specific day per month)
@@ -651,7 +654,7 @@ export async function getNextPaymentDateForOccurrence(payment: RecurringPayment)
   // For by_term payments, calculate based on firstBillDate
   if (payment.paymentType === "by_term" && typeSpecific.firstBillDate) {
     const firstBillDate = new Date(typeSpecific.firstBillDate);
-    const [hours, minutes] = config.time.split(':').map(Number);
+    const [hours, minutes] = config.time?.split(':').map(Number) || [0, 0];
 
     // Start from firstBillDate and find the next occurrence after now
     let nextDate = new Date(firstBillDate);

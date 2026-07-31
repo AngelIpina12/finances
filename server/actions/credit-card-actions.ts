@@ -5,6 +5,7 @@ import { drizzleDb, accounts, transactions, type Transaction, type Account } fro
 import { eq, and, gte, lte, or } from "drizzle-orm";
 import { recurringPayments } from "@/lib/db/schema";
 import Decimal from "decimal.js";
+import { addMonths } from "date-fns";
 
 export interface BillingCycleInfo {
   accountId: string;
@@ -58,28 +59,32 @@ export async function getCreditCardBillingCycleInfo(
   const dueDate = creditCard.dueDate as number;
 
   // Calculate billing cycle dates
+  // Billing cycle goes from billingDate (e.g., 15th) to billingDate - 1 (e.g., 14th) of the next month
+  // We always show the LAST CLOSED cycle (not the current open one)
   const today = new Date();
   const currentYear = today.getFullYear();
-  const currentMonth = today.getMonth(); // 0-indexed
+  const currentMonth = today.getMonth();
 
-  // Cycle end: billing date of current month (or today if before billing date)
-  const cycleEnd = new Date(currentYear, currentMonth, Math.min(billingDate, today.getDate()));
+  let cycleStart: Date;
+  let cycleEnd: Date;
+
   // If today is before the billing date, we're still in the previous cycle
   if (today.getDate() < billingDate) {
-    cycleEnd.setMonth(cycleEnd.getMonth() - 1);
+    // We're before this month's billing date, so last closed cycle is 2 months ago
+    cycleStart = new Date(currentYear, currentMonth - 2, billingDate);
+    cycleEnd = new Date(currentYear, currentMonth - 1, billingDate - 1);
+  } else {
+    // We're after this month's billing date, so last closed cycle is last month
+    cycleStart = new Date(currentYear, currentMonth - 1, billingDate);
+    cycleEnd = new Date(currentYear, currentMonth, billingDate - 1);
   }
 
-  // Cycle start: billing date of previous month
-  const cycleStart = new Date(cycleEnd);
-  cycleStart.setMonth(cycleStart.getMonth() - 1);
-
-  // Due payment date: due date of next month (after the cycle ends)
+  // Due payment date: due date of the month after the cycle ends
   const duePaymentDate = new Date(cycleEnd.getFullYear(), cycleEnd.getMonth() + 1, dueDate);
 
   // Get all transactions in this billing cycle
-  // EXCLUDE transactions that have recurringPaymentId - these are from by_term payments
-  // which track their balance via owedAmount, not via individual transactions
-  const allCycleTransactions = await drizzleDb
+  // INCLUDE all transactions (both regular and by_term/MSI) for the cycle total
+  const cycleTransactions = await drizzleDb
     .select()
     .from(transactions)
     .where(
@@ -90,9 +95,6 @@ export async function getCreditCardBillingCycleInfo(
         lte(transactions.date, cycleEnd)
       )
     );
-
-  // Filter out by_term transactions (those with recurringPaymentId set)
-  const cycleTransactions = allCycleTransactions.filter(tx => !tx.recurringPaymentId);
 
   // Calculate totals
   let totalCharges = new Decimal(0);
@@ -109,14 +111,15 @@ export async function getCreditCardBillingCycleInfo(
     // Transfers are not included in billing cycle calculation
   }
 
-  // Net owed = charges - payments (ONLY regular transactions)
-  // Note: by_term payments track via owedAmount, NOT via billing cycle transactions
-  // owedAmount is shown separately in the UI, not added to netOwed
-  const owedAmountDecimal = new Decimal(creditCard.owedAmount || "0");
+  // Net owed = charges - payments (including by_term/MSI transactions)
   const netOwed = totalCharges.minus(totalPayments);
 
-  // Get the monthly by_term payment from active recurring payments for this account
+  // Calculate owedAmount from ALL by_term payments for this account
+  // (sum of remaining balances across all by_term plans)
+  let owedAmountDecimal = new Decimal(0);
   let byTermMonthlyPayment = new Decimal(0);
+  const now = new Date();
+
   const byTermPayments = await drizzleDb
     .select()
     .from(recurringPayments)
@@ -129,10 +132,40 @@ export async function getCreditCardBillingCycleInfo(
     );
 
   for (const payment of byTermPayments) {
-    const typeSpecific = payment.typeSpecific as { creditAccountId?: string; totalAmount?: string; totalPayments?: number };
-    if (typeSpecific.creditAccountId === accountId && typeSpecific.totalAmount && typeSpecific.totalPayments) {
-      byTermMonthlyPayment = new Decimal(typeSpecific.totalAmount).dividedBy(typeSpecific.totalPayments);
-      break; // Use the first active by_term payment for this account
+    const typeSpecific = payment.typeSpecific as {
+      creditAccountId?: string;
+      totalAmount?: string;
+      totalPayments?: number;
+      firstBillDate?: Date;
+      reduceCreditLimit?: boolean;
+    };
+
+    if (typeSpecific.creditAccountId === accountId && typeSpecific.totalAmount && typeSpecific.totalPayments && typeSpecific.firstBillDate) {
+      const totalAmount = new Decimal(typeSpecific.totalAmount);
+      const totalPayments = typeSpecific.totalPayments;
+      const monthlyAmount = totalAmount.dividedBy(totalPayments);
+      const firstBillDate = new Date(typeSpecific.firstBillDate);
+
+      // Count how many payments have been made (including firstBillDate if in the past)
+      let pastPayments = 0;
+      let currentPaymentDate = new Date(firstBillDate);
+
+      while (currentPaymentDate <= now && pastPayments < totalPayments) {
+        pastPayments++;
+        currentPaymentDate = addMonths(firstBillDate, pastPayments);
+      }
+
+      // Calculate remaining owed amount for this payment plan
+      const amountPaid = monthlyAmount.times(pastPayments);
+      const paymentOwedAmount = totalAmount.minus(amountPaid);
+
+      // Only add if there's still a balance remaining
+      if (paymentOwedAmount.greaterThan(0)) {
+        owedAmountDecimal = owedAmountDecimal.plus(paymentOwedAmount);
+      }
+
+      // Add to monthly payment total
+      byTermMonthlyPayment = byTermMonthlyPayment.plus(monthlyAmount);
     }
   }
 

@@ -367,7 +367,7 @@ export default function RecurringPage() {
             name: editingPayment.name,
             description: editingPayment.description || "",
             cycleType: editingPayment.cycleType as CycleType,
-            cycleConfig: cycleConfig || { type: "monthly", interval: 1, time: "00:00" },
+            cycleConfig: cycleConfig ? { ...cycleConfig, time: cycleConfig.time || "00:00" } : { type: "monthly", interval: 1, time: "00:00" },
             startDate: editingPayment.startDate ? new Date(editingPayment.startDate) : undefined,
             endDate: editingPayment.endDate ? new Date(editingPayment.endDate) : undefined,
             indefiniteTransaction: {
@@ -385,7 +385,7 @@ export default function RecurringPage() {
             name: editingPayment.name,
             description: editingPayment.description || "",
             cycleType: editingPayment.cycleType as CycleType,
-            cycleConfig: cycleConfig || { type: "monthly", interval: 1, time: "00:00" },
+            cycleConfig: cycleConfig ? { ...cycleConfig, time: cycleConfig.time || "00:00" } : { type: "monthly", interval: 1, time: "00:00" },
             startDate: editingPayment.startDate ? new Date(editingPayment.startDate) : undefined,
             endDate: editingPayment.endDate ? new Date(editingPayment.endDate) : undefined,
             indefiniteTransfer: {
@@ -402,7 +402,7 @@ export default function RecurringPage() {
           name: editingPayment.name,
           description: editingPayment.description || "",
           cycleType: cycleConfig?.type || "monthly",
-          cycleConfig: cycleConfig || { type: "monthly", interval: 1, time: "00:00" },
+          cycleConfig: cycleConfig ? { ...cycleConfig, time: cycleConfig.time || "00:00" } : { type: "monthly", interval: 1, time: "00:00" },
           byTerm: {
             categoryId: typeSpecific.categoryId || "",
             subcategoryId: typeSpecific.subcategoryId || "",
@@ -420,7 +420,7 @@ export default function RecurringPage() {
           name: editingPayment.name,
           description: editingPayment.description || "",
           cycleType: cycleConfig?.type || "monthly",
-          cycleConfig: cycleConfig || { type: "monthly", interval: 1, time: "00:00" },
+          cycleConfig: cycleConfig ? { ...cycleConfig, time: cycleConfig.time || "00:00" } : { type: "monthly", interval: 1, time: "00:00" },
           subscription: {
             iconUrl: typeSpecific.iconUrl || "",
             price: typeSpecific.price || "",

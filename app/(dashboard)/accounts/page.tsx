@@ -102,8 +102,6 @@ function formatBillingCycleInfo(info: BillingCycleInfo): string {
   const netOwed = parseFloat(info.netOwed) || 0;
   const owedAmount = parseFloat(info.owedAmount) || 0;
   const byTermMonthly = parseFloat(info.byTermMonthlyPayment) || 0;
-  const totalAPagarEsteMes = netOwed + byTermMonthly;
-  const totalGeneral = netOwed + owedAmount;
 
   const lines = [
     `📅 Ciclo: ${formatDate(info.cycleStart)} - ${formatDate(info.cycleEnd)}`,
@@ -118,17 +116,13 @@ function formatBillingCycleInfo(info: BillingCycleInfo): string {
 
   // Show owedAmount if there's by_term payment balance
   if (owedAmount > 0) {
-    lines.push(`📋 Total adeudo plazos: ${formatCurrency(owedAmount.toString(), info.currency)}`);
+    lines.push(`📋 Resta MSI (plazos): ${formatCurrency(owedAmount.toString(), info.currency)}`);
   }
 
   lines.push(
     ``,
-    `📊 Total a pagar este mes: ${formatCurrency(totalAPagarEsteMes.toFixed(2), info.currency)}`
+    `📊 Total a pagar este mes: ${formatCurrency(netOwed.toFixed(2), info.currency)}`
   );
-
-  if (owedAmount > 0 && owedAmount !== totalAPagarEsteMes) {
-    lines.push(`📦 Total (saldo total): ${formatCurrency(totalGeneral.toFixed(2), info.currency)}`);
-  }
 
   lines.push(
     ``,
@@ -921,7 +915,7 @@ export default function AccountsPage() {
                               <PopoverTrigger asChild>
                                 <span className="cursor-help underline decoration-dotted">
                                   {formatCurrency(
-                                    (parseFloat(billingCycles[account.id].netOwed) + parseFloat(billingCycles[account.id].byTermMonthlyPayment || "0")).toString(),
+                                    billingCycles[account.id].netOwed,
                                     account.currency
                                   )}
                                 </span>
