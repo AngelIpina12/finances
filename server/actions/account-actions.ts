@@ -95,6 +95,7 @@ export async function updateAccount(
     name?: string;
     type?: "cash" | "debit" | "credit";
     currency?: "USD" | "EUR" | "GBP" | "MXN";
+    balance?: string;
     institution?: string;
     note?: string;
     color?: string;
@@ -122,6 +123,7 @@ export async function updateAccount(
   if (data.name !== undefined) updateData.name = data.name;
   if (data.type !== undefined) updateData.type = data.type;
   if (data.currency !== undefined) updateData.currency = data.currency;
+  if (data.balance !== undefined) updateData.balance = data.balance;
   if (data.institution !== undefined) updateData.institution = data.institution;
   if (data.note !== undefined) updateData.note = data.note;
   if (data.color !== undefined) updateData.color = data.color;

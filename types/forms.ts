@@ -37,6 +37,45 @@ export const accountSchema = z.object({
   paymentReminder: z.boolean().default(false),
 });
 
+export const fixedIncomeAccountSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(100),
+  linkedAccountId: z.string().uuid('Invalid linked account ID'),
+  currency: z.enum(['USD', 'EUR', 'GBP', 'MXN']).default('USD'),
+  initialInterestRate: z.string().refine(
+    (val) => {
+      const num = parseFloat(val);
+      return !isNaN(num) && num > 0 && num <= 100;
+    },
+    'Interest rate must be between 0 and 100'
+  ),
+  initialAmountLimit: z.string().refine(
+    (val) => {
+      const num = parseFloat(val);
+      return !isNaN(num) && num > 0;
+    },
+    'Amount limit must be a positive number'
+  ),
+  originalPrincipal: z.string().refine(
+    (val) => {
+      const num = parseFloat(val);
+      return !isNaN(num) && num >= 0;
+    },
+    'Original principal must be a non-negative number'
+  ),
+  hasSecondTier: z.boolean().default(false),
+  secondInterestRate: z.string().optional(),
+  secondAmountLimit: z.string().optional().nullable(),
+}).refine((data) => {
+  if (data.hasSecondTier && data.secondInterestRate) {
+    const rate = parseFloat(data.secondInterestRate);
+    return rate > 0 && rate <= 100;
+  }
+  return true;
+}, {
+  message: 'Second tier interest rate must be between 0 and 100',
+  path: ['secondInterestRate'],
+});
+
 export const categorySchema = z.object({
   name: z.string().min(1, 'Name is required').max(100),
   type: z.enum(['income', 'expense']),
@@ -201,20 +240,72 @@ export const recurringPaymentSchema = z.object({
   typeSpecific: z.union([indefiniteTransactionSchema, indefiniteTransferSchema, byTermSchema, subscriptionSchema]),
 });
 
-export const budgetSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
+export const budgetAllocationSchema = z.object({
+  categoryId: z.string().uuid('Invalid category ID'),
   amount: z.string().refine(
-    (val) => !isNaN(parseFloat(val)) && parseFloat(val) > 0,
-    'Amount must be a positive number'
+    (val) => !isNaN(parseFloat(val)) && parseFloat(val) >= 0,
+    'Amount must be a non-negative number'
   ),
-  period: z.enum(['weekly', 'monthly', 'yearly']),
-  category: z.string(),
-  startDate: z.string().transform(val => {
+});
+
+// Budget Category Credit Allocation Schema (pre-planned category spending on CC)
+export const budgetCategoryCreditAllocationSchema = z.object({
+  categoryId: z.string().uuid('Invalid category ID'),
+  monthlyAmount: z.string().refine(
+    (val) => !isNaN(parseFloat(val)) && parseFloat(val) >= 0,
+    'Amount must be a non-negative number'
+  ),
+});
+
+// Budget Credit Card Account Schema
+export const budgetCCAccountSchema = z.object({
+  creditAccountId: z.string().uuid('Invalid account ID'),
+  categoryAllocations: z.array(budgetCategoryCreditAllocationSchema),
+});
+
+const dateTransform = z.union([z.string(), z.date()]).transform(val => {
+  if (val instanceof Date) return val;
+  if (typeof val === 'string') {
     if (val.startsWith('$D')) {
       return new Date(val.slice(2));
     }
     return new Date(val);
-  }),
+  }
+  return new Date(val);
+});
+
+const nullableDateTransform = z.union([z.string(), z.date()]).optional().nullable().transform(val => {
+  if (!val) return null;
+  if (val instanceof Date) return val;
+  if (typeof val === 'string') {
+    if (val.startsWith('$D')) {
+      return new Date(val.slice(2));
+    }
+    return new Date(val);
+  }
+  return new Date(val);
+});
+
+export const budgetSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(255),
+  amount: z.string().refine(
+    (val) => !isNaN(parseFloat(val)) && parseFloat(val) > 0,
+    'Amount must be a positive number'
+  ),
+  period: z.enum(['daily', 'weekly', 'monthly', 'quarterly', 'annually']),
+  type: z.enum(['income', 'expense']).default('expense'),
+  isGlobal: z.boolean().default(true),
+  isReusable: z.boolean().default(false),
+  rolloverType: z.enum(['disabled', 'carry_unused', 'carry_unused_plus_overspend', 'carry_overspend_only']).default('disabled'),
+  categoryId: z.string().uuid().optional().nullable(),
+  category: z.string().optional(),
+  startDate: dateTransform,
+  endDate: nullableDateTransform,
+  allocations: z.array(budgetAllocationSchema).optional(),
+  autoCalculateAllocations: z.boolean().default(false),
+  // Credit card tracking
+  hasCreditCardTracking: z.boolean().default(false),
+  ccAccounts: z.array(budgetCCAccountSchema).optional(),
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -225,6 +316,8 @@ export type TagInput = z.infer<typeof tagSchema>;
 export type TransactionInput = z.infer<typeof transactionSchema>;
 export type RecurringPaymentInput = z.infer<typeof recurringPaymentSchema>;
 export type BudgetInput = z.infer<typeof budgetSchema>;
+export type BudgetAllocationInput = z.infer<typeof budgetAllocationSchema>;
+export type FixedIncomeAccountInput = z.infer<typeof fixedIncomeAccountSchema>;
 
 // Legacy CATEGORIES - kept for backwards compatibility
 export const CATEGORIES = [

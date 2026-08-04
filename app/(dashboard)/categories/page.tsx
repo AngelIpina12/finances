@@ -92,11 +92,13 @@ export default function CategoriesPage() {
   const [isSubcategoryModalOpen, setIsSubcategoryModalOpen] = useState(false);
   const [editingSubcategoryId, setEditingSubcategoryId] = useState<string | null>(null);
   const [parentCategoryId, setParentCategoryId] = useState<string | null>(null);
+  const [subcategorySubmitting, setSubcategorySubmitting] = useState(false);
 
   // Tag modal state
   const [isTagModalOpen, setIsTagModalOpen] = useState(false);
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
   const [tagCategoryId, setTagCategoryId] = useState<string | null>(null);
+  const [tagSubmitting, setTagSubmitting] = useState(false);
 
   const form = useForm<CategoryFormData>({
     resolver: zodResolver(categoryFormSchema),
@@ -268,13 +270,14 @@ export default function CategoriesPage() {
   function openSubcategoryModal(parentId: string) {
     setParentCategoryId(parentId);
     setEditingSubcategoryId(null);
+    setSubcategorySubmitting(false);
     tagForm.reset({ name: "", categoryId: parentId });
     setIsSubcategoryModalOpen(true);
   }
 
   async function handleSubcategorySubmit(data: TagFormData) {
     try {
-      setIsSubmitting(true);
+      setSubcategorySubmitting(true);
       await createTag({ name: data.name, categoryId: data.categoryId });
       setIsSubcategoryModalOpen(false);
       await fetchCategories();
@@ -283,7 +286,7 @@ export default function CategoriesPage() {
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to create subcategory");
     } finally {
-      setIsSubmitting(false);
+      setSubcategorySubmitting(false);
     }
   }
 
@@ -301,20 +304,21 @@ export default function CategoriesPage() {
   function openTagModal(categoryId: string) {
     setTagCategoryId(categoryId);
     setEditingTagId(null);
+    setTagSubmitting(false);
     tagForm.reset({ name: "", categoryId });
     setIsTagModalOpen(true);
   }
 
   async function handleTagSubmit(data: TagFormData) {
     try {
-      setIsSubmitting(true);
+      setTagSubmitting(true);
       await createTag({ name: data.name, categoryId: data.categoryId });
       setIsTagModalOpen(false);
       await fetchTagsForCategory(data.categoryId);
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to create tag");
     } finally {
-      setIsSubmitting(false);
+      setTagSubmitting(false);
     }
   }
 
@@ -546,8 +550,8 @@ export default function CategoriesPage() {
               >
                 Cancelar
               </Button>
-              <Button type="submit" disabled={isSubmitting}>
-                {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              <Button type="submit" disabled={subcategorySubmitting}>
+                {subcategorySubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Crear
               </Button>
             </div>
@@ -586,8 +590,8 @@ export default function CategoriesPage() {
               >
                 Cancelar
               </Button>
-              <Button type="submit" disabled={isSubmitting}>
-                {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              <Button type="submit" disabled={tagSubmitting}>
+                {tagSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Crear
               </Button>
             </div>

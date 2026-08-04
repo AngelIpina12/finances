@@ -101,6 +101,7 @@ export async function createRecurringPayment(data: {
   startDate?: Date;
   endDate?: Date;
   typeSpecific: TypeSpecificData;
+  remainingBalance?: string | number;
 }): Promise<RecurringPayment> {
   const session = await auth();
   if (!session?.user?.id) throw new Error("Unauthorized");
@@ -128,8 +129,8 @@ export async function createRecurringPayment(data: {
       const monthsDiff = (now.getFullYear() - firstBillDate.getFullYear()) * 12 +
         (now.getMonth() - firstBillDate.getMonth());
 
-      // Next payment is monthsDiff + 1 from firstBillDate
-      nextPaymentDate = addMonths(firstBillDate, monthsDiff + 1);
+      // Next payment is monthsDiff from firstBillDate (the billing day of the current/future month)
+      nextPaymentDate = addMonths(firstBillDate, monthsDiff);
 
       // Set the day to match firstBillDate's day
       const paymentDay = firstBillDate.getDate();
@@ -175,6 +176,11 @@ export async function createRecurringPayment(data: {
       endDate: data.endDate,
       nextPaymentDate,
       typeSpecific: data.typeSpecific as object,
+      remainingBalance: data.remainingBalance !== undefined
+        ? new Decimal(data.remainingBalance.toString()).toString()
+        : data.paymentType === "by_term" && data.typeSpecific.totalAmount
+          ? data.typeSpecific.totalAmount.toString()
+          : null,
     })
     .returning();
 
@@ -199,6 +205,7 @@ export async function updateRecurringPayment(
     typeSpecific?: TypeSpecificData;
     isActive?: number;
     nextPaymentDate?: Date;
+    remainingBalance?: string | number;
   }
 ): Promise<RecurringPayment> {
   const session = await auth();
@@ -224,6 +231,9 @@ export async function updateRecurringPayment(
       ...data,
       cycleConfig: data.cycleConfig ? data.cycleConfig as object : undefined,
       typeSpecific: data.typeSpecific ? data.typeSpecific as object : undefined,
+      remainingBalance: data.remainingBalance !== undefined
+        ? new Decimal(data.remainingBalance.toString()).toString()
+        : undefined,
       updatedAt: new Date(),
     })
     .where(
@@ -670,8 +680,8 @@ export async function getNextPaymentDateForOccurrence(payment: RecurringPayment)
     const monthsDiff = (now.getFullYear() - firstBillDate.getFullYear()) * 12 +
       (now.getMonth() - firstBillDate.getMonth());
 
-    // Start from firstBillDate and add months to get to now, then add one more
-    nextDate = addMonths(firstBillDate, monthsDiff + 1);
+    // Start from firstBillDate and add monthsDiff to get the current/future billing month
+    nextDate = addMonths(firstBillDate, monthsDiff);
 
     // If we're past the payment day this month, nextDate is already correct
     // If not, go back one month and forward
@@ -724,16 +734,58 @@ export async function processRecurringPayments(): Promise<{ processed: number; r
 
   for (const payment of duePayments) {
     try {
-      // Calculate next payment date
-      const nextDate = await getNextPaymentDateForOccurrence(payment);
+      const typeSpecific = payment.typeSpecific as TypeSpecificData;
+      let updateData: Record<string, unknown> = {
+        updatedAt: new Date(),
+      };
 
-      // Update the payment with new next payment date
+      // For by_term payments, create a transaction and reduce remainingBalance
+      if (payment.paymentType === "by_term" && typeSpecific.creditAccountId) {
+        const totalAmount = new Decimal(typeSpecific.totalAmount || "0");
+        const totalPayments = typeSpecific.totalPayments || 1;
+        const monthlyAmount = totalAmount.dividedBy(totalPayments);
+
+        // Create the expense transaction for this payment
+        const { transactions } = await import("@/lib/db/schema");
+        if (payment.nextPaymentDate) {
+          await drizzleDb.insert(transactions).values({
+            userId: payment.userId,
+            accountId: typeSpecific.creditAccountId,
+            type: "expense",
+            categoryId: typeSpecific.categoryId || null,
+            amount: monthlyAmount.toString(),
+            description: payment.name,
+            recurringPaymentId: payment.id,
+            date: payment.nextPaymentDate,
+          });
+        }
+
+        // Reduce remainingBalance by monthlyAmount
+        if (payment.remainingBalance) {
+          const currentBalance = new Decimal(payment.remainingBalance);
+          const newBalance = currentBalance.minus(monthlyAmount);
+
+          if (newBalance.lessThanOrEqualTo(0)) {
+            // All payments done - deactivate and set remainingBalance to 0
+            updateData.remainingBalance = "0";
+            updateData.isActive = 0;
+          } else {
+            updateData.remainingBalance = newBalance.toString();
+          }
+        }
+
+        // Calculate next payment date
+        const nextDate = await getNextPaymentDateForOccurrence(payment);
+        updateData.nextPaymentDate = nextDate;
+      } else {
+        // For non-by_term payments, just update next payment date
+        const nextDate = await getNextPaymentDateForOccurrence(payment);
+        updateData.nextPaymentDate = nextDate;
+      }
+
       await drizzleDb
         .update(recurringPayments)
-        .set({
-          nextPaymentDate: nextDate,
-          updatedAt: new Date(),
-        })
+        .set(updateData)
         .where(eq(recurringPayments.id, payment.id));
 
       results.push({ id: payment.id, success: true });

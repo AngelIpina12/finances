@@ -97,6 +97,7 @@ interface TypeSpecificData {
   firstBillDate?: Date;
   creditAccountId?: string;
   reduceCreditLimit?: boolean;
+  remainingBalance?: string;
   iconUrl?: string;
   price?: string;
   billingCycle?: string;
@@ -140,6 +141,7 @@ const byTermSchema = z.object({
   firstBillDate: z.date(),
   creditAccountId: z.string().min(1, "Credit account is required"),
   reduceCreditLimit: z.boolean(),
+  remainingBalance: z.string().optional(),
 });
 
 const subscriptionSchema = z.object({
@@ -412,6 +414,7 @@ export default function RecurringPage() {
             firstBillDate: typeSpecific.firstBillDate ? new Date(typeSpecific.firstBillDate) : new Date(),
             creditAccountId: typeSpecific.creditAccountId || "",
             reduceCreditLimit: typeSpecific.reduceCreditLimit || false,
+            remainingBalance: editingPayment.remainingBalance || "",
           },
         });
       } else {
@@ -504,8 +507,8 @@ export default function RecurringPage() {
         };
       }
 
-      // Filter out undefined values to avoid "Invalid UUID" errors
-      const filteredData = {
+      // Filter out undefined values and add remainingBalance for by_term
+      const submissionData: Record<string, unknown> = {
         name: data.name,
         description: data.description,
         cycleType: data.cycleType,
@@ -514,19 +517,20 @@ export default function RecurringPage() {
         endDate: data.endDate,
         typeSpecific,
       };
-      Object.keys(filteredData).forEach((key) => {
-        if (filteredData[key as keyof typeof filteredData] === undefined) {
-          delete filteredData[key as keyof typeof filteredData];
-        }
+      if (data.paymentType === "by_term" && data.byTerm?.remainingBalance) {
+        submissionData.remainingBalance = data.byTerm.remainingBalance;
+      }
+      Object.keys(submissionData).forEach((key) => {
+        if (submissionData[key] === undefined) delete submissionData[key];
       });
 
       if (editingPayment) {
-        await updateRecurringPayment(editingPayment.id, filteredData);
+        await updateRecurringPayment(editingPayment.id, submissionData as Parameters<typeof updateRecurringPayment>[1]);
       } else {
         await createRecurringPayment({
           paymentType: data.paymentType,
-          ...filteredData,
-        });
+          ...submissionData,
+        } as Parameters<typeof createRecurringPayment>[0]);
       }
 
       closeModal();
@@ -597,6 +601,7 @@ export default function RecurringPage() {
         firstBillDate: new Date(),
         creditAccountId: "",
         reduceCreditLimit: false,
+        remainingBalance: "",
       });
       setModalStep("form");
     } else {
@@ -1073,6 +1078,20 @@ export default function RecurringPage() {
                           {...form.register("byTerm.totalPayments", { valueAsNumber: true })}
                         />
                       </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="remainingBalance">Remaining Balance (from bank statement)</Label>
+                      <Input
+                        id="remainingBalance"
+                        type="number"
+                        step="0.01"
+                        placeholder="Leave empty to auto-calculate"
+                        {...form.register("byTerm.remainingBalance")}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Saldo pendiente real de tu estado de cuenta. Si lo dejas vacío, se calcula automáticamente.
+                      </p>
                     </div>
 
                     <div className="space-y-2">

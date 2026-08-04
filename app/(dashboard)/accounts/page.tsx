@@ -119,10 +119,25 @@ function formatBillingCycleInfo(info: BillingCycleInfo): string {
     lines.push(`📋 Resta MSI (plazos): ${formatCurrency(owedAmount.toString(), info.currency)}`);
   }
 
+  // Total occupied = regular netOwed + MSI remaining balance
+  const totalOccupied = netOwed + owedAmount;
   lines.push(
     ``,
+    `💰 Total ocupado: ${formatCurrency(totalOccupied.toString(), info.currency)}`
+  );
+
+  lines.push(
     `📊 Total a pagar este mes: ${formatCurrency(netOwed.toFixed(2), info.currency)}`
   );
+
+  // Show future charges if any (>30 days from now)
+  if (info.futureCharges && info.futureCharges.length > 0) {
+    lines.push(``);
+    lines.push(`⚠️ Cargos futuros:`);
+    for (const fc of info.futureCharges) {
+      lines.push(`  • ${fc.name}: ${formatCurrency(fc.amount, info.currency)} (${formatDate(fc.nextPaymentDate)})`);
+    }
+  }
 
   lines.push(
     ``,
@@ -330,7 +345,10 @@ export default function AccountsPage() {
       };
 
       if (isEditMode && editingAccount) {
-        await updateAccount(editingAccount.id, submitData);
+        await updateAccount(editingAccount.id, {
+          ...submitData,
+          balance: data.balance,
+        });
       } else {
         await createAccount({
           ...submitData,
@@ -488,19 +506,17 @@ export default function AccountsPage() {
                   </Select>
                 </div>
 
-                {/* Balance (solo crear) */}
-                {!isEditMode && (
-                  <div className="space-y-2">
-                    <Label htmlFor="balance">Equilibrio</Label>
-                    <Input
-                      id="balance"
-                      type="number"
-                      step="0.01"
-                      placeholder="0.00"
-                      {...form.register("balance")}
-                    />
-                  </div>
-                )}
+                {/* Balance */}
+                <div className="space-y-2">
+                  <Label htmlFor="balance">Balance</Label>
+                  <Input
+                    id="balance"
+                    type="number"
+                    step="0.01"
+                    placeholder="0.00"
+                    {...form.register("balance")}
+                  />
+                </div>
               </div>
 
               {/* Institución */}

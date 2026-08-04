@@ -1,7 +1,7 @@
 import { pgTable, uuid, varchar, decimal, timestamp, text, integer, pgEnum, jsonb } from 'drizzle-orm/pg-core';
 
 // Enums
-export const accountTypeEnum = pgEnum('account_type', ['cash', 'debit', 'credit']);
+export const accountTypeEnum = pgEnum('account_type', ['cash', 'debit', 'credit', 'fixed_income']);
 export const transactionTypeEnum = pgEnum('transaction_type', ['income', 'expense', 'transfer']);
 export const currencyEnum = pgEnum('currency', ['USD', 'EUR', 'GBP', 'MXN']);
 export const recurringPaymentTypeEnum = pgEnum('recurring_payment_type', ['indefinite', 'by_term', 'subscription']);
@@ -89,11 +89,59 @@ export const budgets = pgTable('budgets', {
   name: varchar('name', { length: 255 }).notNull(),
   amount: decimal('amount', { precision: 15, scale: 2 }).notNull(),
   period: varchar('period', { length: 50 }).notNull(),
+  type: transactionTypeEnum('type').notNull().default('expense'),
+  isGlobal: integer('is_global').notNull().default(1),
+  isReusable: integer('is_reusable').notNull().default(0),
+  rolloverType: varchar('rollover_type', { length: 50 }).notNull().default('disabled'),
+  categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null' }),
   category: varchar('category', { length: 255 }),
   startDate: timestamp('start_date').notNull(),
   endDate: timestamp('end_date'),
+  // Credit card tracking
+  hasCreditCardTracking: integer('has_credit_card_tracking').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Budget Credit Cards Table (links a budget to specific credit card accounts)
+export const budgetCreditCards = pgTable('budget_credit_cards', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  budgetId: uuid('budget_id').notNull().references(() => budgets.id, { onDelete: 'cascade' }),
+  creditAccountId: uuid('credit_account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Budget Category Credit Allocations Table (pre-planned category spending on specific CCs)
+export const budgetCategoryCreditAllocations = pgTable('budget_category_credit_allocations', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  budgetCreditCardId: uuid('budget_credit_card_id').notNull().references(() => budgetCreditCards.id, { onDelete: 'cascade' }),
+  categoryId: uuid('category_id').notNull().references(() => categories.id, { onDelete: 'cascade' }),
+  monthlyAmount: decimal('monthly_amount', { precision: 15, scale: 2 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Budget Allocations Table (per-category amounts for category-level budgets)
+export const budgetAllocations = pgTable('budget_allocations', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  budgetId: uuid('budget_id').notNull().references(() => budgets.id, { onDelete: 'cascade' }),
+  categoryId: uuid('category_id').notNull().references(() => categories.id, { onDelete: 'cascade' }),
+  amount: decimal('amount', { precision: 15, scale: 2 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Budget Periods Table (tracks each period instance with rollover)
+export const budgetPeriods = pgTable('budget_periods', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  budgetId: uuid('budget_id').notNull().references(() => budgets.id, { onDelete: 'cascade' }),
+  periodStart: timestamp('period_start').notNull(),
+  periodEnd: timestamp('period_end').notNull(),
+  allocatedAmount: decimal('allocated_amount', { precision: 15, scale: 2 }).notNull(),
+  rolloverAmount: decimal('rollover_amount', { precision: 15, scale: 2 }).default('0'),
+  totalAvailable: decimal('total_available', { precision: 15, scale: 2 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
 // Recurring Payments Table
@@ -118,6 +166,10 @@ export const recurringPayments = pgTable('recurring_payments', {
   // Type-specific (JSON)
   typeSpecific: jsonb('type_specific'),
 
+  // For by_term MSI: original total amount (不变)
+  // For by_term MSI: remaining balance (actual from bank statement)
+  remainingBalance: decimal('remaining_balance', { precision: 15, scale: 2 }),
+
   // Status
   isActive: integer('is_active').notNull().default(1),
 
@@ -139,6 +191,43 @@ export const investments = pgTable('investments', {
   purchaseDate: timestamp('purchase_date'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Fixed Income Accounts Table
+export const fixedIncomeAccounts = pgTable('fixed_income_accounts', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  linkedAccountId: uuid('linked_account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 255 }).notNull(),
+  currency: currencyEnum('currency').notNull().default('USD'),
+  // Capital original (depósitos) - base para calcular qué es "nuevo dinero"
+  originalPrincipal: decimal('original_principal', { precision: 15, scale: 2 }).notNull().default('0'),
+  // Tier 1
+  initialInterestRate: decimal('initial_interest_rate', { precision: 5, scale: 2 }).notNull(),
+  initialAmountLimit: decimal('initial_amount_limit', { precision: 15, scale: 2 }).notNull(),
+  // Tier 2
+  hasSecondTier: integer('has_second_tier').notNull().default(0),
+  secondInterestRate: decimal('second_interest_rate', { precision: 5, scale: 2 }),
+  secondAmountLimit: decimal('second_amount_limit', { precision: 15, scale: 2 }),
+  // Accumulated
+  accumulatedInterest: decimal('accumulated_interest', { precision: 15, scale: 2 }).notNull().default('0'),
+  lastAccrualDate: timestamp('last_accrual_date'),
+  // Status
+  isActive: integer('is_active').notNull().default(1),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Fixed Income Accruals Table (daily history)
+export const fixedIncomeAccruals = pgTable('fixed_income_accruals', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  accountId: uuid('account_id').notNull().references(() => fixedIncomeAccounts.id, { onDelete: 'cascade' }),
+  date: timestamp('date').notNull(),
+  balanceAtStart: decimal('balance_at_start', { precision: 15, scale: 2 }).notNull(),
+  interestEarned: decimal('interest_earned', { precision: 15, scale: 4 }).notNull(),
+  balanceAtEnd: decimal('balance_at_end', { precision: 15, scale: 2 }).notNull(),
+  effectiveRate: decimal('effective_rate', { precision: 5, scale: 2 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
 // Loans Table
@@ -168,6 +257,14 @@ export type Tag = typeof tags.$inferSelect;
 export type NewTag = typeof tags.$inferInsert;
 export type Transaction = typeof transactions.$inferSelect;
 export type Budget = typeof budgets.$inferSelect;
+export type BudgetAllocation = typeof budgetAllocations.$inferSelect;
+export type BudgetPeriod = typeof budgetPeriods.$inferSelect;
+export type BudgetCreditCard = typeof budgetCreditCards.$inferSelect;
+export type NewBudgetCreditCard = typeof budgetCreditCards.$inferInsert;
+export type BudgetCategoryCreditAllocation = typeof budgetCategoryCreditAllocations.$inferSelect;
+export type NewBudgetCategoryCreditAllocation = typeof budgetCategoryCreditAllocations.$inferInsert;
 export type RecurringPayment = typeof recurringPayments.$inferSelect;
 export type Investment = typeof investments.$inferSelect;
 export type Loan = typeof loans.$inferSelect;
+export type FixedIncomeAccount = typeof fixedIncomeAccounts.$inferSelect;
+export type FixedIncomeAccrual = typeof fixedIncomeAccruals.$inferSelect;
