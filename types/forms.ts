@@ -65,6 +65,7 @@ export const fixedIncomeAccountSchema = z.object({
   hasSecondTier: z.boolean().default(false),
   secondInterestRate: z.string().optional(),
   secondAmountLimit: z.string().optional().nullable(),
+  compoundFirstTier: z.boolean().default(true),
 }).refine((data) => {
   if (data.hasSecondTier && data.secondInterestRate) {
     const rate = parseFloat(data.secondInterestRate);

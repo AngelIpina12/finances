@@ -122,17 +122,17 @@ export function CreditCardStep({ form }: CreditCardStepProps) {
     form.setValue("ccAccounts", updated);
   };
 
-  const totalMonthlySpending = ccAccounts.reduce((sum, cc) => {
+  const totalMonthlySpending = ccAccounts.reduce((sum: number, cc: typeof ccAccounts[number]) => {
     return sum + cc.categoryAllocations.reduce(
-      (s, alloc) => s + (parseFloat(alloc.monthlyAmount) || 0),
+      (s: number, alloc: typeof cc.categoryAllocations[number]) => s + (parseFloat(alloc.monthlyAmount) || 0),
       0
     );
   }, 0);
 
   // Get categories already assigned to CC
   const assignedCategoryIds = new Set(
-    ccAccounts.flatMap(cc =>
-      cc.categoryAllocations.map(a => a.categoryId).filter(Boolean)
+    ccAccounts.flatMap((cc: typeof ccAccounts[number]) =>
+      cc.categoryAllocations.map((a: typeof cc.categoryAllocations[number]) => a.categoryId).filter(Boolean)
     )
   );
 

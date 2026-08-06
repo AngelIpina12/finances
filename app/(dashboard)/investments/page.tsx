@@ -55,6 +55,7 @@ const fixedIncomeFormSchema = z.object({
   hasSecondTier: z.boolean(),
   secondInterestRate: z.string().optional(),
   secondAmountLimit: z.string().optional().nullable(),
+  compoundFirstTier: z.boolean(),
 });
 
 type FixedIncomeFormData = z.infer<typeof fixedIncomeFormSchema>;
@@ -85,33 +86,31 @@ function calculateEffectiveRate(
   originalPrincipal: string,
   accumulatedInterest: string,
   secondRate: string | null,
-  secondLimit: string | null
+  secondLimit: string | null,
+  compoundFirstTier: boolean
 ): InterestCalculationResult {
   const balanceNum = new Decimal(balance);
   const initialRateNum = new Decimal(initialRate);
   const initialLimitNum = new Decimal(initialLimit);
   const originalPrincipalNum = new Decimal(originalPrincipal);
-  const accumulatedInterestNum = new Decimal(accumulatedInterest);
   const secondRateNum = secondRate ? new Decimal(secondRate) : null;
   const secondLimitNum = secondLimit ? new Decimal(secondLimit) : null;
 
-  // Tier 1: Cubre originalPrincipal + accumulatedInterest hasta initialLimit
-  // Si el accumulated interest hace que exceda el limit, se queda en Tier 1
-  const tier1Amount = Decimal.min(
-    originalPrincipalNum.plus(accumulatedInterestNum),
-    initialLimitNum
-  );
+  let tier1Balance: Decimal;
+  let tier2Balance: Decimal;
+
+  if (compoundFirstTier) {
+    // Compound: TODO el balance va a Tier 1 (el interés compuesto se acumula)
+    tier1Balance = balanceNum;
+    tier2Balance = new Decimal(0);
+  } else {
+    // Simple: Tier 1 es hasta initialLimit, Tier 2 es lo que excede
+    tier1Balance = Decimal.min(balanceNum, initialLimitNum);
+    tier2Balance = Decimal.max(new Decimal(0), balanceNum.minus(initialLimitNum));
+  }
+
   const dailyRate1 = initialRateNum.dividedBy(365).dividedBy(100);
-  const tier1Interest = tier1Amount.times(dailyRate1);
-
-  // Tier 2: Solo nuevos depósitos que excedan originalPrincipal (no accumulated interest)
-  // newDeposits = balance - originalPrincipal - accumulatedInterest
-  const newMoney = Decimal.max(
-    new Decimal(0),
-    balanceNum.minus(originalPrincipalNum).minus(accumulatedInterestNum)
-  );
-
-  let tier2Balance = newMoney;
+  const tier1Interest = tier1Balance.times(dailyRate1);
   let tier2Interest = new Decimal(0);
 
   if (tier2Balance.greaterThan(0) && secondRateNum) {
@@ -132,8 +131,8 @@ function calculateEffectiveRate(
     tier2Interest: tier2Interest.toString(),
     totalDailyInterest: totalDailyInterest.toString(),
     effectiveRate: effectiveRate.toString(),
-    tier1Balance: tier1Amount.toString(),
-    tier2Balance: tier2Balance.toString(),
+    tier1Balance: tier1Balance.toString(),
+    tier2Balance: tier2Balance.greaterThan(0) ? tier2Balance.toString() : "0",
   };
 }
 
@@ -198,6 +197,7 @@ export default function InvestmentsPage() {
       hasSecondTier: false,
       secondInterestRate: "",
       secondAmountLimit: "",
+      compoundFirstTier: true,
     });
     setIsModalOpen(true);
   }
@@ -215,6 +215,7 @@ export default function InvestmentsPage() {
       hasSecondTier: account.hasSecondTier === 1,
       secondInterestRate: account.secondInterestRate || "",
       secondAmountLimit: account.secondAmountLimit || "",
+      compoundFirstTier: account.compoundFirstTier === 1,
     });
     setIsModalOpen(true);
   }
@@ -239,6 +240,7 @@ export default function InvestmentsPage() {
           hasSecondTier: data.hasSecondTier,
           secondInterestRate: data.secondInterestRate || undefined,
           secondAmountLimit: data.secondAmountLimit || undefined,
+          compoundFirstTier: data.compoundFirstTier,
         });
       } else {
         await createFixedIncomeAccount({
@@ -251,6 +253,7 @@ export default function InvestmentsPage() {
           hasSecondTier: data.hasSecondTier,
           secondInterestRate: data.secondInterestRate || undefined,
           secondAmountLimit: data.secondAmountLimit || undefined,
+          compoundFirstTier: data.compoundFirstTier,
         });
       }
 
@@ -285,16 +288,25 @@ export default function InvestmentsPage() {
   const selectedDebitAccount = debitAccounts.find((a) => a.id === watchedLinkedAccountId);
   const selectedDebitBalance = selectedDebitAccount ? new Decimal(selectedDebitAccount.balance) : new Decimal(0);
 
+  // Use account values when editing, otherwise use form values for new accounts
+  const previewOriginalPrincipal = isEditMode && editingAccount ? editingAccount.originalPrincipal || "0" : "0";
+  const previewAccumulatedInterest = isEditMode && editingAccount ? editingAccount.accumulatedInterest || "0" : "0";
+  const previewCompoundFirstTier = isEditMode && editingAccount ? editingAccount.compoundFirstTier === 1 : true;
+
+  // Preview "what if": when compoundFirstTier is true, Tier 1 = full balance (ignoring limit)
+  const previewTier1Balance = previewCompoundFirstTier ? selectedDebitBalance : new Decimal(previewOriginalPrincipal);
+
   const previewCalculation =
     selectedDebitBalance.greaterThan(0) && watchedInitialRate && watchedInitialLimit
       ? calculateEffectiveRate(
           selectedDebitBalance,
           watchedInitialRate,
           watchedInitialLimit,
-          "0", // originalPrincipal - not set for new accounts in preview
-          "0", // accumulatedInterest - not set for new accounts in preview
+          previewOriginalPrincipal,
+          previewAccumulatedInterest,
           watchedHasSecondTier ? (watchedSecondRate || null) : null,
-          watchedSecondLimit || null
+          watchedSecondLimit || null,
+          previewCompoundFirstTier
         )
       : null;
 
@@ -396,7 +408,8 @@ export default function InvestmentsPage() {
                   account.originalPrincipal || "0",
                   account.accumulatedInterest || "0",
                   account.hasSecondTier === 1 ? (account.secondInterestRate || null) : null,
-                  account.secondAmountLimit || null
+                  account.secondAmountLimit || null,
+                  account.compoundFirstTier === 1
                 );
 
                 return (
@@ -635,6 +648,21 @@ export default function InvestmentsPage() {
                   )}
                 </div>
               </div>
+            </div>
+
+            {/* Compound First Tier Switch */}
+            <div className="flex items-center justify-between rounded-lg border p-4">
+              <div className="space-y-0.5">
+                <Label htmlFor="compoundFirstTier">Interés compuesto en Tier 1</Label>
+                <p className="text-sm text-muted-foreground">
+                  Activa para que el interés se acumule en el Tier 1 (compuesto). Desactiva para interés simple.
+                </p>
+              </div>
+              <Switch
+                id="compoundFirstTier"
+                checked={form.watch("compoundFirstTier")}
+                onCheckedChange={(checked) => form.setValue("compoundFirstTier", checked)}
+              />
             </div>
 
             {/* Second Tier Switch */}

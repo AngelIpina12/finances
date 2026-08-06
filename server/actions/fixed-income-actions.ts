@@ -21,13 +21,28 @@ function calculateInterestInternal(
   initialRate: Decimal,
   initialLimit: Decimal,
   secondRate: Decimal | null,
-  secondLimit: Decimal | null
+  secondLimit: Decimal | null,
+  compoundFirstTier: boolean,
+  originalPrincipal: Decimal,
+  accumulatedInterest: Decimal
 ): InterestCalculationResult {
   const dailyRate1 = initialRate.dividedBy(365).dividedBy(100);
-  const tier1Balance = Decimal.min(balance, initialLimit);
-  const tier1Interest = tier1Balance.times(dailyRate1);
 
-  let tier2Balance = balance.minus(initialLimit);
+  let tier1Balance: Decimal;
+  let tier2Balance: Decimal;
+
+  if (compoundFirstTier) {
+    // Compound: el interés se queda en Tier 1, dinero nuevo va a Tier 2
+    const principalAndInterest = originalPrincipal.plus(accumulatedInterest);
+    tier1Balance = Decimal.min(principalAndInterest, initialLimit);
+    tier2Balance = Decimal.max(new Decimal(0), balance.minus(principalAndInterest));
+  } else {
+    // Simple: Tier 1 es hasta initialLimit, Tier 2 es lo que excede
+    tier1Balance = Decimal.min(balance, initialLimit);
+    tier2Balance = Decimal.max(new Decimal(0), balance.minus(initialLimit));
+  }
+
+  const tier1Interest = tier1Balance.times(dailyRate1);
   let tier2Interest = new Decimal(0);
 
   if (tier2Balance.greaterThan(0) && secondRate) {
@@ -49,7 +64,7 @@ function calculateInterestInternal(
     totalDailyInterest: totalDailyInterest.toString(),
     effectiveRate: effectiveRate.toString(),
     tier1Balance: tier1Balance.toString(),
-    tier2Balance: tier2Balance.toString(),
+    tier2Balance: tier2Balance.greaterThan(0) ? tier2Balance.toString() : "0",
   };
 }
 
@@ -102,6 +117,7 @@ export async function createFixedIncomeAccount(data: {
   hasSecondTier: boolean;
   secondInterestRate?: string;
   secondAmountLimit?: string;
+  compoundFirstTier: boolean;
 }): Promise<FixedIncomeAccount> {
   const session = await auth();
   if (!session?.user?.id) throw new Error("Unauthorized");
@@ -124,6 +140,7 @@ export async function createFixedIncomeAccount(data: {
       hasSecondTier: parsed.data.hasSecondTier ? 1 : 0,
       secondInterestRate: parsed.data.secondInterestRate || null,
       secondAmountLimit: parsed.data.secondAmountLimit || null,
+      compoundFirstTier: parsed.data.compoundFirstTier ? 1 : 0,
       accumulatedInterest: '0',
       isActive: 1,
     })
@@ -142,6 +159,7 @@ export async function updateFixedIncomeAccount(
     hasSecondTier?: boolean;
     secondInterestRate?: string;
     secondAmountLimit?: string;
+    compoundFirstTier?: boolean;
   }
 ): Promise<FixedIncomeAccount> {
   const session = await auth();
@@ -160,6 +178,7 @@ export async function updateFixedIncomeAccount(
   if (data.hasSecondTier !== undefined) updateData.hasSecondTier = data.hasSecondTier ? 1 : 0;
   if (data.secondInterestRate !== undefined) updateData.secondInterestRate = data.secondInterestRate || null;
   if (data.secondAmountLimit !== undefined) updateData.secondAmountLimit = data.secondAmountLimit || null;
+  if (data.compoundFirstTier !== undefined) updateData.compoundFirstTier = data.compoundFirstTier ? 1 : 0;
 
   const [updated] = await drizzleDb
     .update(fixedIncomeAccounts)
@@ -210,9 +229,12 @@ export async function accrueDailyInterest(accountId: string): Promise<void> {
   const initialLimit = new Decimal(account.initialAmountLimit);
   const secondRate = account.secondInterestRate ? new Decimal(account.secondInterestRate) : null;
   const secondLimit = account.secondAmountLimit ? new Decimal(account.secondAmountLimit) : null;
+  const compoundFirstTier = account.compoundFirstTier === 1;
+  const originalPrincipal = new Decimal(account.originalPrincipal);
+  const accumulatedInterest = new Decimal(account.accumulatedInterest || "0");
 
   const calculation = calculateInterestInternal(
-    balance, initialRate, initialLimit, secondRate, secondLimit
+    balance, initialRate, initialLimit, secondRate, secondLimit, compoundFirstTier, originalPrincipal, accumulatedInterest
   );
 
   const today = new Date();
@@ -239,4 +261,14 @@ export async function accrueDailyInterest(accountId: string): Promise<void> {
       updatedAt: new Date(),
     })
     .where(eq(fixedIncomeAccounts.id, accountId));
+
+  // Update the linked account's balance with the earned interest (always, regardless of compoundFirstTier)
+  const newBalance = balance.plus(calculation.totalDailyInterest);
+  await drizzleDb
+    .update(accounts)
+    .set({
+      balance: newBalance.toString(),
+      updatedAt: new Date(),
+    })
+    .where(eq(accounts.id, account.linkedAccountId));
 }

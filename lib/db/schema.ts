@@ -209,6 +209,8 @@ export const fixedIncomeAccounts = pgTable('fixed_income_accounts', {
   hasSecondTier: integer('has_second_tier').notNull().default(0),
   secondInterestRate: decimal('second_interest_rate', { precision: 5, scale: 2 }),
   secondAmountLimit: decimal('second_amount_limit', { precision: 15, scale: 2 }),
+  // Compound interest in Tier 1
+  compoundFirstTier: integer('compound_first_tier').notNull().default(1),
   // Accumulated
   accumulatedInterest: decimal('accumulated_interest', { precision: 15, scale: 2 }).notNull().default('0'),
   lastAccrualDate: timestamp('last_accrual_date'),

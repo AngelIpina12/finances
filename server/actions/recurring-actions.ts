@@ -553,7 +553,7 @@ function calculateNextPaymentDateFromConfig(currentDate: Date, config: CycleConf
       nextDate = addWeeks(nextDate, config.interval);
       break;
     case 'monthly':
-      if (hasPerMonthDays) {
+      if (hasPerMonthDays && config.perMonthDays) {
         // Find the next month in perMonthDays that is after currentDate
         nextDate = findNextPerMonthDay(currentDate, config.perMonthDays, config.interval);
       } else if (config.daysOfMonth && config.daysOfMonth.length > 0) {
@@ -848,7 +848,7 @@ export async function fixNextPaymentDates(): Promise<{ corrected: number }> {
         // If stored date is wrong (before now or doesn't match perMonthDays), fix it
         const monthKey = `${storedDate.getFullYear()}-${String(storedDate.getMonth() + 1).padStart(2, '0')}`;
         const hasStoredMonth = config.perMonthDays && config.perMonthDays[monthKey] !== undefined;
-        const storedDay = hasStoredMonth ? config.perMonthDays[monthKey] : null;
+        const storedDay = (hasStoredMonth && config.perMonthDays) ? config.perMonthDays[monthKey] : null;
         const correctMonthKey = `${correctNextDate.getFullYear()}-${String(correctNextDate.getMonth() + 1).padStart(2, '0')}`;
         const correctHasMonth = config.perMonthDays && config.perMonthDays[correctMonthKey] !== undefined;
 

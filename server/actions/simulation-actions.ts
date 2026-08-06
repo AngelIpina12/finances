@@ -168,7 +168,9 @@ export async function simulateProjectedBalances(
   // Track next payment dates for each payment
   const paymentNextDates = new Map<string, Date>();
   for (const payment of activePayments) {
-    paymentNextDates.set(payment.id, new Date(payment.nextPaymentDate));
+    if (payment.nextPaymentDate) {
+      paymentNextDates.set(payment.id, new Date(payment.nextPaymentDate));
+    }
   }
 
   // Initial total balance snapshot
@@ -188,30 +190,34 @@ export async function simulateProjectedBalances(
     // Process any payments due on this date
     for (const payment of activePayments) {
       const nextDate = paymentNextDates.get(payment.id)!;
+      const typeSpecific = payment.typeSpecific as { accountId?: string; amount?: string; frequency?: string } | null;
 
       if (
         isDateInPeriodGranularity(nextDate, start, currentDate, granularity)
       ) {
-        const accountState = accountStates.get(payment.accountId);
-        if (accountState) {
-          const paymentAmount = new Decimal(payment.amount);
+        const accountId = typeSpecific?.accountId;
+        const accountState = accountId ? accountStates.get(accountId) : undefined;
+        if (accountState && typeSpecific?.amount && accountId) {
+          const paymentAmount = new Decimal(typeSpecific.amount);
           accountState.balance = accountState.balance.minus(paymentAmount);
 
           accountState.events.push({
             type: "expense",
-            accountId: payment.accountId,
+            accountId: accountId,
             accountName: accountState.name,
             paymentName: payment.name,
-            amount: parseFloat(payment.amount),
+            amount: parseFloat(typeSpecific.amount),
             date: new Date(nextDate),
           });
         }
 
         // Schedule next occurrence
-        paymentNextDates.set(
-          payment.id,
-          calculateNextPaymentDate(nextDate, payment.frequency)
-        );
+        if (typeSpecific?.frequency) {
+          paymentNextDates.set(
+            payment.id,
+            calculateNextPaymentDate(nextDate, typeSpecific.frequency)
+          );
+        }
       }
     }
 
