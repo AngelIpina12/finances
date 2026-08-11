@@ -71,7 +71,7 @@ import { CalendarIcon } from "lucide-react";
 // Types
 type PaymentType = "indefinite" | "by_term" | "subscription";
 type CycleType = "daily" | "weekly" | "monthly" | "yearly" | "custom";
-type Subtype = "transaction" | "transfer";
+type Subtype = "transaction" | "transfer" | "payroll";
 
 interface CycleConfig {
   type: CycleType;
@@ -103,6 +103,14 @@ interface TypeSpecificData {
   billingCycle?: string;
   paymentDay?: number;
   endDate?: Date;
+  // Payroll income specific
+  isPayroll?: boolean;
+  payrollConfig?: {
+    dayOfWeek: number; // 0=Sun, 1=Mon, ..., 6=Sat
+    regularAmount: string;
+    fifthWeekAmount?: string;
+    hasFifthWeekAdjustment: boolean;
+  };
 }
 
 // Form schemas
@@ -122,7 +130,14 @@ const indefiniteTransactionSchema = z.object({
   categoryId: z.string().optional(),
   subcategoryId: z.string().optional(),
   tagIds: z.array(z.string()).optional(),
-  amount: z.string().min(1, "Amount is required"),
+  amount: z.string().optional(), // Optional - for payroll, regularAmount is used instead
+  isPayroll: z.boolean().optional(),
+  payrollConfig: z.object({
+    dayOfWeek: z.number().min(0).max(6),
+    regularAmount: z.string().min(1, "Amount is required"),
+    fifthWeekAmount: z.string().optional(),
+    hasFifthWeekAdjustment: z.boolean(),
+  }).optional(),
 });
 
 const indefiniteTransferSchema = z.object({
@@ -364,23 +379,54 @@ export default function RecurringPage() {
 
       if (editingPayment.paymentType === "indefinite") {
         if (typeSpecific.subtype === "transaction") {
-          form.reset({
-            paymentType: editingPayment.paymentType,
-            name: editingPayment.name,
-            description: editingPayment.description || "",
-            cycleType: editingPayment.cycleType as CycleType,
-            cycleConfig: cycleConfig ? { ...cycleConfig, time: cycleConfig.time || "00:00" } : { type: "monthly", interval: 1, time: "00:00" },
-            startDate: editingPayment.startDate ? new Date(editingPayment.startDate) : undefined,
-            endDate: editingPayment.endDate ? new Date(editingPayment.endDate) : undefined,
-            indefiniteTransaction: {
-              subtype: "transaction",
-              accountId: typeSpecific.accountId || "",
-              categoryId: typeSpecific.categoryId || "",
-              subcategoryId: typeSpecific.subcategoryId || "",
-              tagIds: typeSpecific.tagIds || [],
-              amount: typeSpecific.amount || "",
-            },
-          });
+          // Check if this is a payroll transaction
+          if (typeSpecific.isPayroll) {
+            form.reset({
+              paymentType: editingPayment.paymentType,
+              name: editingPayment.name,
+              description: editingPayment.description || "",
+              cycleType: editingPayment.cycleType as CycleType,
+              cycleConfig: cycleConfig ? { ...cycleConfig, time: cycleConfig.time || "00:00" } : { type: "monthly", interval: 1, time: "00:00" },
+              startDate: editingPayment.startDate ? new Date(editingPayment.startDate) : undefined,
+              endDate: editingPayment.endDate ? new Date(editingPayment.endDate) : undefined,
+              indefiniteTransaction: {
+                subtype: "transaction",
+                accountId: typeSpecific.accountId || "",
+                categoryId: typeSpecific.categoryId || "",
+                subcategoryId: typeSpecific.subcategoryId || "",
+                tagIds: typeSpecific.tagIds || [],
+                amount: typeSpecific.amount || "",
+                isPayroll: true,
+                payrollConfig: typeSpecific.payrollConfig ? {
+                  dayOfWeek: typeSpecific.payrollConfig.dayOfWeek ?? 4,
+                  regularAmount: typeSpecific.payrollConfig.regularAmount || "",
+                  fifthWeekAmount: typeSpecific.payrollConfig.fifthWeekAmount || "",
+                  hasFifthWeekAdjustment: typeSpecific.payrollConfig.hasFifthWeekAdjustment ?? false,
+                } : undefined,
+              },
+            });
+            setIndefiniteSubtype("payroll");
+          } else {
+            // Regular transaction
+            form.reset({
+              paymentType: editingPayment.paymentType,
+              name: editingPayment.name,
+              description: editingPayment.description || "",
+              cycleType: editingPayment.cycleType as CycleType,
+              cycleConfig: cycleConfig ? { ...cycleConfig, time: cycleConfig.time || "00:00" } : { type: "monthly", interval: 1, time: "00:00" },
+              startDate: editingPayment.startDate ? new Date(editingPayment.startDate) : undefined,
+              endDate: editingPayment.endDate ? new Date(editingPayment.endDate) : undefined,
+              indefiniteTransaction: {
+                subtype: "transaction",
+                accountId: typeSpecific.accountId || "",
+                categoryId: typeSpecific.categoryId || "",
+                subcategoryId: typeSpecific.subcategoryId || "",
+                tagIds: typeSpecific.tagIds || [],
+                amount: typeSpecific.amount || "",
+              },
+            });
+            setIndefiniteSubtype("transaction");
+          }
         } else {
           form.reset({
             paymentType: editingPayment.paymentType,
@@ -397,6 +443,7 @@ export default function RecurringPage() {
               amount: typeSpecific.amount || "",
             },
           });
+          setIndefiniteSubtype("transfer");
         }
       } else if (editingPayment.paymentType === "by_term") {
         form.reset({
@@ -438,7 +485,6 @@ export default function RecurringPage() {
       }
 
       setSelectedPaymentType(editingPayment.paymentType as PaymentType);
-      setIndefiniteSubtype(typeSpecific.subtype || null);
 
       // Restore perMonthDays and useSpecificDayPerMonth from cycleConfig
       if (cycleConfig?.perMonthDays && Object.keys(cycleConfig.perMonthDays).length > 0) {
@@ -455,6 +501,7 @@ export default function RecurringPage() {
   }, [editingPayment, form]);
 
   async function onSubmit(data: RecurringFormData) {
+    console.log("Submitting data:", data);
     try {
       setIsSubmitting(true);
 
@@ -462,7 +509,7 @@ export default function RecurringPage() {
       let typeSpecific: TypeSpecificData = {};
 
       if (data.paymentType === "indefinite") {
-        if (indefiniteSubtype === "transaction" || (data.indefiniteTransaction && !data.indefiniteTransfer)) {
+        if (indefiniteSubtype === "transaction") {
           const txn = data.indefiniteTransaction!;
           typeSpecific = {
             subtype: "transaction",
@@ -471,6 +518,18 @@ export default function RecurringPage() {
             subcategoryId: txn.subcategoryId,
             tagIds: txn.tagIds,
             amount: txn.amount,
+            isPayroll: txn.isPayroll,
+            payrollConfig: txn.payrollConfig,
+          };
+        } else if (indefiniteSubtype === "payroll") {
+          const txn = data.indefiniteTransaction!;
+          typeSpecific = {
+            subtype: "transaction",
+            accountId: txn.accountId,
+            isPayroll: true,
+            payrollConfig: txn.payrollConfig,
+            categoryId: txn.categoryId,
+            tagIds: txn.tagIds,
           };
         } else {
           const tf = data.indefiniteTransfer!;
@@ -508,11 +567,17 @@ export default function RecurringPage() {
       }
 
       // Filter out undefined values and add remainingBalance for by_term
+      // For payroll, ensure cycleConfig.daysOfWeek is set from payrollConfig.dayOfWeek
+      let cycleConfig = { ...data.cycleConfig, perMonthDays };
+      if (indefiniteSubtype === "payroll" && data.indefiniteTransaction?.payrollConfig?.dayOfWeek !== undefined) {
+        cycleConfig.daysOfWeek = [data.indefiniteTransaction.payrollConfig.dayOfWeek];
+      }
+
       const submissionData: Record<string, unknown> = {
         name: data.name,
         description: data.description,
         cycleType: data.cycleType,
-        cycleConfig: { ...data.cycleConfig, perMonthDays },
+        cycleConfig,
         startDate: data.startDate,
         endDate: data.endDate,
         typeSpecific,
@@ -627,9 +692,10 @@ export default function RecurringPage() {
         accountId: "",
         categoryId: "",
         amount: "",
+        isPayroll: false,
       });
       form.setValue("indefiniteTransfer", undefined);
-    } else {
+    } else if (subtype === "transfer") {
       form.setValue("indefiniteTransfer", {
         subtype: "transfer",
         fromAccountId: "",
@@ -637,6 +703,21 @@ export default function RecurringPage() {
         amount: "",
       });
       form.setValue("indefiniteTransaction", undefined);
+    } else if (subtype === "payroll") {
+      form.setValue("indefiniteTransaction", {
+        subtype: "transaction",
+        accountId: "",
+        categoryId: "",
+        amount: "",
+        isPayroll: true,
+        payrollConfig: {
+          dayOfWeek: 4, // Thursday by default (payday)
+          regularAmount: "",
+          fifthWeekAmount: "",
+          hasFifthWeekAdjustment: false,
+        },
+      });
+      form.setValue("indefiniteTransfer", undefined);
     }
     setModalStep("form");
   }
@@ -660,6 +741,10 @@ export default function RecurringPage() {
     }
     if (payment.paymentType === "subscription") {
       return formatCurrency(typeSpecific.price || "0");
+    }
+    // For payroll, show the regular weekly amount
+    if (typeSpecific.isPayroll && typeSpecific.payrollConfig) {
+      return `${formatCurrency(typeSpecific.payrollConfig.regularAmount)}/week`;
     }
     return formatCurrency(typeSpecific.amount || "0");
   };
@@ -723,7 +808,7 @@ export default function RecurringPage() {
                   : selectedPaymentType === "indefinite" && !indefiniteSubtype
                   ? "Transaction or Transfer?"
                   : selectedPaymentType === "indefinite"
-                  ? `Indefinite - ${indefiniteSubtype === "transaction" ? "Transaction" : "Transfer"}`
+                  ? `Indefinite - ${indefiniteSubtype === "transaction" ? "Transaction" : indefiniteSubtype === "payroll" ? "Payroll" : "Transfer"}`
                   : selectedPaymentType === "by_term"
                   ? "By Term"
                   : "Subscription"}
@@ -732,7 +817,7 @@ export default function RecurringPage() {
                 {modalStep === "type"
                   ? "Choose the type of recurring payment you want to create."
                   : selectedPaymentType === "indefinite" && !indefiniteSubtype
-                  ? "Is this a regular transaction or a transfer?"
+                  ? "Is this a regular transaction, a transfer, or payroll income?"
                   : "Fill in the details for your recurring payment."}
               </DialogDescription>
             </DialogHeader>
@@ -778,27 +863,38 @@ export default function RecurringPage() {
 
             {/* Step 2: Select Indefinite Subtype */}
             {modalStep === "type" && selectedPaymentType === "indefinite" && (
-              <div className="grid grid-cols-2 gap-4 py-4">
+              <div className="grid grid-cols-3 gap-4 py-4">
                 <button
                   type="button"
                   onClick={() => handleIndefiniteSubtypeSelect("transaction")}
-                  className="flex flex-col items-center justify-center rounded-lg border-2 border-border p-8 hover:border-primary hover:bg-accent transition-colors"
+                  className="flex flex-col items-center justify-center rounded-lg border-2 border-border p-6 hover:border-primary hover:bg-accent transition-colors"
                 >
                   <span className="text-3xl mb-2">💳</span>
                   <span className="font-medium">Transaction</span>
-                  <span className="text-xs text-muted-foreground mt-1">
+                  <span className="text-xs text-muted-foreground mt-1 text-center">
                     Regular expense
                   </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleIndefiniteSubtypeSelect("transfer")}
-                  className="flex flex-col items-center justify-center rounded-lg border-2 border-border p-8 hover:border-primary hover:bg-accent transition-colors"
+                  className="flex flex-col items-center justify-center rounded-lg border-2 border-border p-6 hover:border-primary hover:bg-accent transition-colors"
                 >
                   <span className="text-3xl mb-2">↔️</span>
                   <span className="font-medium">Transfer</span>
-                  <span className="text-xs text-muted-foreground mt-1">
+                  <span className="text-xs text-muted-foreground mt-1 text-center">
                     Between accounts
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleIndefiniteSubtypeSelect("payroll")}
+                  className="flex flex-col items-center justify-center rounded-lg border-2 border-border p-6 hover:border-primary hover:bg-accent transition-colors"
+                >
+                  <span className="text-3xl mb-2">💰</span>
+                  <span className="font-medium">Payroll</span>
+                  <span className="text-xs text-muted-foreground mt-1 text-center">
+                    Salary / Income
                   </span>
                 </button>
               </div>
@@ -841,99 +937,218 @@ export default function RecurringPage() {
                   )}
                 </div>
 
-                {/* Indefinite - Transaction */}
-                {selectedPaymentType === "indefinite" && indefiniteSubtype === "transaction" && (
+                {/* Indefinite - Transaction / Payroll */}
+                {selectedPaymentType === "indefinite" && (indefiniteSubtype === "transaction" || indefiniteSubtype === "payroll") && (
                   <>
-                    <div className="space-y-2">
-                      <Label>Category</Label>
-                      <Select
-                        onValueChange={(value) =>
-                          form.setValue("indefiniteTransaction.categoryId", value)
-                        }
-                        defaultValue={form.getValues("indefiniteTransaction.categoryId")}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select category" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {categories
-                            .filter((c) => !c.parentId)
-                            .map((cat) => (
-                              <SelectItem key={cat.id} value={cat.id}>
-                                {cat.name}
-                              </SelectItem>
-                            ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    {/* Payroll Header */}
+                    {indefiniteSubtype === "payroll" && (
+                      <div className="bg-green-50 dark:bg-green-900/20 p-4 rounded-lg border border-green-200 dark:border-green-800">
+                        <p className="text-sm text-green-800 dark:text-green-200 font-medium">
+                          💰 Configure your payroll income. Set the regular weekly amount and optionally adjust for months with 5 weeks.
+                        </p>
+                      </div>
+                    )}
 
-                    {form.watch("indefiniteTransaction.categoryId") && (() => {
-                      const catId = form.watch("indefiniteTransaction.categoryId");
-                      const tags = categoryTags[catId!] || [];
-                      return (
+                    {indefiniteSubtype === "payroll" ? (
+                      /* Payroll Form Fields */
+                      <>
                         <div className="space-y-2">
-                          <Label>Tags (Optional)</Label>
-                          <div className="flex flex-wrap gap-2">
-                            {tags.map((tag) => {
-                              const selectedTags = form.watch("indefiniteTransaction.tagIds") || [];
-                              const isSelected = selectedTags.includes(tag.id);
-                              return (
-                                <button
-                                  key={tag.id}
-                                  type="button"
-                                  onClick={() => {
-                                    const newTags = isSelected
-                                      ? selectedTags.filter((t) => t !== tag.id)
-                                      : [...selectedTags, tag.id];
-                                    form.setValue("indefiniteTransaction.tagIds", newTags);
-                                  }}
-                                  className={cn(
-                                    "px-3 py-1 rounded-full text-sm transition-colors",
-                                    isSelected
-                                      ? "bg-primary text-primary-foreground"
-                                      : "bg-secondary hover:bg-secondary/80"
-                                  )}
-                                >
-                                  {tag.name}
-                                </button>
-                              );
-                            })}
-                          </div>
+                          <Label>Account</Label>
+                          <Select
+                            onValueChange={(value) =>
+                              form.setValue("indefiniteTransaction.accountId", value)
+                            }
+                            defaultValue={form.getValues("indefiniteTransaction.accountId")}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select account" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {accounts.map((account) => (
+                                <SelectItem key={account.id} value={account.id}>
+                                  {account.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
-                      );
-                    })()}
 
-                    <div className="space-y-2">
-                      <Label htmlFor="amount">Amount</Label>
-                      <Input
-                        id="amount"
-                        type="number"
-                        step="0.01"
-                        placeholder="0.00"
-                        {...form.register("indefiniteTransaction.amount")}
-                      />
-                    </div>
+                        <div className="space-y-2">
+                          <Label>Day of Week</Label>
+                          <Select
+                            onValueChange={(value) =>
+                              form.setValue("indefiniteTransaction.payrollConfig.dayOfWeek", parseInt(value))
+                            }
+                            defaultValue={String(form.getValues("indefiniteTransaction.payrollConfig.dayOfWeek") ?? 4)}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select day" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {[
+                                { value: 0, label: "Sunday" },
+                                { value: 1, label: "Monday" },
+                                { value: 2, label: "Tuesday" },
+                                { value: 3, label: "Wednesday" },
+                                { value: 4, label: "Thursday" },
+                                { value: 5, label: "Friday" },
+                                { value: 6, label: "Saturday" },
+                              ].map((day) => (
+                                <SelectItem key={day.value} value={String(day.value)}>
+                                  {day.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
 
-                    <div className="space-y-2">
-                      <Label>Account</Label>
-                      <Select
-                        onValueChange={(value) =>
-                          form.setValue("indefiniteTransaction.accountId", value)
-                        }
-                        defaultValue={form.getValues("indefiniteTransaction.accountId")}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select account" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {accounts.map((account) => (
-                            <SelectItem key={account.id} value={account.id}>
-                              {account.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="regularAmount">Weekly Amount (4 weeks)</Label>
+                          <Input
+                            id="regularAmount"
+                            type="number"
+                            step="0.01"
+                            placeholder="e.g., 6611.80"
+                            {...form.register("indefiniteTransaction.payrollConfig.regularAmount")}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Amount for regular weeks (4 per month)
+                          </p>
+                        </div>
+
+                        <div className="flex items-center space-x-2">
+                          <Switch
+                            id="hasFifthWeekAdjustment"
+                            checked={form.watch("indefiniteTransaction.payrollConfig.hasFifthWeekAdjustment") ?? false}
+                            onCheckedChange={(checked) =>
+                              form.setValue("indefiniteTransaction.payrollConfig.hasFifthWeekAdjustment", checked)
+                            }
+                          />
+                          <Label htmlFor="hasFifthWeekAdjustment" className="cursor-pointer">
+                            Adjust for months with 5 weeks
+                          </Label>
+                        </div>
+
+                        {form.watch("indefiniteTransaction.payrollConfig.hasFifthWeekAdjustment") && (
+                          <div className="space-y-2">
+                            <Label htmlFor="fifthWeekAmount">Fifth Week Amount</Label>
+                            <Input
+                              id="fifthWeekAmount"
+                              type="number"
+                              step="0.01"
+                              placeholder="e.g., 6210.40"
+                              {...form.register("indefiniteTransaction.payrollConfig.fifthWeekAmount")}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Amount for the 5th week (months with 5 occurrences of the payday)
+                            </p>
+                            {(() => {
+                              const regular = parseFloat(form.watch("indefiniteTransaction.payrollConfig.regularAmount") || "0");
+                              const fifth = parseFloat(form.watch("indefiniteTransaction.payrollConfig.fifthWeekAmount") || "0");
+                              return (
+                                <p className="text-xs text-green-600 dark:text-green-400">
+                                  Monthly total: {formatCurrency(String((regular * 4) + fifth))} in 5-week months, {formatCurrency(String(regular * 4))} in 4-week months
+                                </p>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      /* Regular Transaction Form Fields */
+                      <>
+                        <div className="space-y-2">
+                          <Label>Category</Label>
+                          <Select
+                            onValueChange={(value) =>
+                              form.setValue("indefiniteTransaction.categoryId", value)
+                            }
+                            defaultValue={form.getValues("indefiniteTransaction.categoryId")}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {categories
+                                .filter((c) => !c.parentId)
+                                .map((cat) => (
+                                  <SelectItem key={cat.id} value={cat.id}>
+                                    {cat.name}
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {form.watch("indefiniteTransaction.categoryId") && (() => {
+                          const catId = form.watch("indefiniteTransaction.categoryId");
+                          const tags = categoryTags[catId!] || [];
+                          return (
+                            <div className="space-y-2">
+                              <Label>Tags (Optional)</Label>
+                              <div className="flex flex-wrap gap-2">
+                                {tags.map((tag) => {
+                                  const selectedTags = form.watch("indefiniteTransaction.tagIds") || [];
+                                  const isSelected = selectedTags.includes(tag.id);
+                                  return (
+                                    <button
+                                      key={tag.id}
+                                      type="button"
+                                      onClick={() => {
+                                        const newTags = isSelected
+                                          ? selectedTags.filter((t) => t !== tag.id)
+                                          : [...selectedTags, tag.id];
+                                        form.setValue("indefiniteTransaction.tagIds", newTags);
+                                      }}
+                                      className={cn(
+                                        "px-3 py-1 rounded-full text-sm transition-colors",
+                                        isSelected
+                                          ? "bg-primary text-primary-foreground"
+                                          : "bg-secondary hover:bg-secondary/80"
+                                      )}
+                                    >
+                                      {tag.name}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })()}
+
+                        <div className="space-y-2">
+                          <Label htmlFor="amount">Amount</Label>
+                          <Input
+                            id="amount"
+                            type="number"
+                            step="0.01"
+                            placeholder="0.00"
+                            {...form.register("indefiniteTransaction.amount")}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label>Account</Label>
+                          <Select
+                            onValueChange={(value) =>
+                              form.setValue("indefiniteTransaction.accountId", value)
+                            }
+                            defaultValue={form.getValues("indefiniteTransaction.accountId")}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select account" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {accounts.map((account) => (
+                                <SelectItem key={account.id} value={account.id}>
+                                  {account.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
 

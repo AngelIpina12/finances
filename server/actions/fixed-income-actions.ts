@@ -14,6 +14,8 @@ export interface InterestCalculationResult {
   effectiveRate: string;
   tier1Balance: string;
   tier2Balance: string;
+  tier1BalanceProjected: string;
+  tier2BalanceProjected: string;
 }
 
 function calculateInterestInternal(
@@ -23,7 +25,7 @@ function calculateInterestInternal(
   secondRate: Decimal | null,
   secondLimit: Decimal | null,
   compoundFirstTier: boolean,
-  originalPrincipal: Decimal,
+  principalBase: Decimal,
   accumulatedInterest: Decimal
 ): InterestCalculationResult {
   const dailyRate1 = initialRate.dividedBy(365).dividedBy(100);
@@ -31,15 +33,21 @@ function calculateInterestInternal(
   let tier1Balance: Decimal;
   let tier2Balance: Decimal;
 
-  if (compoundFirstTier) {
-    // Compound: el interés se queda en Tier 1, dinero nuevo va a Tier 2
-    const principalAndInterest = originalPrincipal.plus(accumulatedInterest);
-    tier1Balance = Decimal.min(principalAndInterest, initialLimit);
-    tier2Balance = Decimal.max(new Decimal(0), balance.minus(principalAndInterest));
+  // Determine if we have a second tier active
+  const hasSecondTierActive = secondRate !== null;
+
+  if (compoundFirstTier && !hasSecondTierActive) {
+    // Compound without second tier: principal stays in Tier 1
+    tier1Balance = principalBase;
+    tier2Balance = new Decimal(0);
+  } else if (compoundFirstTier && hasSecondTierActive) {
+    // Compound WITH second tier: derive principals from principal base
+    tier1Balance = Decimal.min(principalBase, initialLimit);
+    tier2Balance = Decimal.max(new Decimal(0), principalBase.minus(initialLimit));
   } else {
-    // Simple: Tier 1 es hasta initialLimit, Tier 2 es lo que excede
-    tier1Balance = Decimal.min(balance, initialLimit);
-    tier2Balance = Decimal.max(new Decimal(0), balance.minus(initialLimit));
+    // Simple interest (non-compound): derive principals from principal base
+    tier1Balance = Decimal.min(principalBase, initialLimit);
+    tier2Balance = Decimal.max(new Decimal(0), principalBase.minus(initialLimit));
   }
 
   const tier1Interest = tier1Balance.times(dailyRate1);
@@ -58,6 +66,14 @@ function calculateInterestInternal(
   const totalDailyInterest = tier1Interest.plus(tier2Interest);
   const effectiveRate = totalDailyInterest.dividedBy(balance).times(365).times(100);
 
+  // Calculate projected balances: total + interest, then derive tiers from that
+  // This ensures tier1Projected + tier2Projected = balance + totalDailyInterest (no rounding error)
+  const totalProjected = balance.plus(totalDailyInterest);
+  const tier1BalanceProjected = Decimal.min(totalProjected, initialLimit);
+  const tier2BalanceProjected = totalProjected.greaterThan(initialLimit)
+    ? totalProjected.minus(initialLimit)
+    : new Decimal(0);
+
   return {
     tier1Interest: tier1Interest.toString(),
     tier2Interest: tier2Interest.toString(),
@@ -65,6 +81,8 @@ function calculateInterestInternal(
     effectiveRate: effectiveRate.toString(),
     tier1Balance: tier1Balance.toString(),
     tier2Balance: tier2Balance.greaterThan(0) ? tier2Balance.toString() : "0",
+    tier1BalanceProjected: tier1BalanceProjected.toString(),
+    tier2BalanceProjected: tier2BalanceProjected.greaterThan(0) ? tier2BalanceProjected.toString() : "0",
   };
 }
 
@@ -142,6 +160,7 @@ export async function createFixedIncomeAccount(data: {
       secondAmountLimit: parsed.data.secondAmountLimit || null,
       compoundFirstTier: parsed.data.compoundFirstTier ? 1 : 0,
       accumulatedInterest: '0',
+      principalBase: parsed.data.originalPrincipal,
       isActive: 1,
     })
     .returning();
@@ -230,11 +249,11 @@ export async function accrueDailyInterest(accountId: string): Promise<void> {
   const secondRate = account.secondInterestRate ? new Decimal(account.secondInterestRate) : null;
   const secondLimit = account.secondAmountLimit ? new Decimal(account.secondAmountLimit) : null;
   const compoundFirstTier = account.compoundFirstTier === 1;
-  const originalPrincipal = new Decimal(account.originalPrincipal);
+  const principalBase = new Decimal(account.principalBase || account.originalPrincipal || "0");
   const accumulatedInterest = new Decimal(account.accumulatedInterest || "0");
 
   const calculation = calculateInterestInternal(
-    balance, initialRate, initialLimit, secondRate, secondLimit, compoundFirstTier, originalPrincipal, accumulatedInterest
+    balance, initialRate, initialLimit, secondRate, secondLimit, compoundFirstTier, principalBase, accumulatedInterest
   );
 
   const today = new Date();
@@ -252,18 +271,19 @@ export async function accrueDailyInterest(accountId: string): Promise<void> {
     });
 
   const newAccumulated = new Decimal(account.accumulatedInterest).plus(calculation.totalDailyInterest);
+  const newBalance = balance.plus(calculation.totalDailyInterest);
 
   await drizzleDb
     .update(fixedIncomeAccounts)
     .set({
       accumulatedInterest: newAccumulated.toString(),
+      originalPrincipal: newBalance.toString(),
       lastAccrualDate: new Date(),
       updatedAt: new Date(),
     })
     .where(eq(fixedIncomeAccounts.id, accountId));
 
   // Update the linked account's balance with the earned interest (always, regardless of compoundFirstTier)
-  const newBalance = balance.plus(calculation.totalDailyInterest);
   await drizzleDb
     .update(accounts)
     .set({

@@ -126,8 +126,10 @@ function formatBillingCycleInfo(info: BillingCycleInfo): string {
     `💰 Total ocupado: ${formatCurrency(totalOccupied.toString(), info.currency)}`
   );
 
+  // Total to pay this month = regular charges + by_term monthly payment
+  const totalToPay = netOwed + byTermMonthly;
   lines.push(
-    `📊 Total a pagar este mes: ${formatCurrency(netOwed.toFixed(2), info.currency)}`
+    `📊 Total a pagar este mes: ${formatCurrency(totalToPay.toFixed(2), info.currency)}`
   );
 
   // Show future charges if any (>30 days from now)
@@ -931,7 +933,7 @@ export default function AccountsPage() {
                               <PopoverTrigger asChild>
                                 <span className="cursor-help underline decoration-dotted">
                                   {formatCurrency(
-                                    billingCycles[account.id].netOwed,
+                                    (parseFloat(billingCycles[account.id].netOwed) + parseFloat(billingCycles[account.id].byTermMonthlyPayment)).toString(),
                                     account.currency
                                   )}
                                 </span>

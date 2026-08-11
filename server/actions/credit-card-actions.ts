@@ -112,20 +112,40 @@ export async function getCreditCardBillingCycleInfo(
       )
     );
 
+  // Get by_term (MSI) recurring payments FIRST, to know which transactions to exclude
+  // Subscription recurring payments (like Netflix, Totalplay) SHOULD count as regular expenses
+  const byTermPayments = await drizzleDb
+    .select()
+    .from(recurringPayments)
+    .where(
+      and(
+        eq(recurringPayments.userId, session.user.id),
+        eq(recurringPayments.paymentType, "by_term"),
+        eq(recurringPayments.isActive, 1)
+      )
+    );
+
+  const byTermPaymentIds = new Set(byTermPayments.map(p => p.id));
+
   // Calculate totals
-  // totalCharges = ONLY regular expenses (no recurring_payment_id / MSI)
-  // MSI transactions are tracked separately in owedAmount/byTermMonthlyPayment
+  // totalCharges = regular expenses + subscription recurring expenses (NOT by_term/MSI)
+  // by_term transactions are tracked separately in owedAmount/byTermMonthlyPayment
   let totalCharges = new Decimal(0);
   let totalPayments = new Decimal(0);
 
   for (const tx of cycleTransactions) {
     const amount = new Decimal(tx.amount);
     if (tx.type === "expense" && !tx.recurringPaymentId) {
-      // Regular expense (not MSI/by_term)
+      // Regular expense (no recurring payment)
       totalCharges = totalCharges.plus(amount);
     } else if (tx.type === "expense" && tx.recurringPaymentId) {
-      // MSI/by_term transaction - don't add to totalCharges
-      // These are tracked separately via recurringPayments
+      // Recurring expense - check if it's by_term (MSI) or subscription
+      if (byTermPaymentIds.has(tx.recurringPaymentId)) {
+        // by_term (MSI) - don't add to totalCharges, tracked separately
+      } else {
+        // subscription - count as regular expense
+        totalCharges = totalCharges.plus(amount);
+      }
     } else if (tx.type === "income") {
       // Payments and refunds are recorded as income on the credit card
       totalPayments = totalPayments.plus(amount);
@@ -140,17 +160,6 @@ export async function getCreditCardBillingCycleInfo(
   // (sum of remaining balances across all by_term plans)
   let owedAmountDecimal = new Decimal(0);
   let byTermMonthlyPayment = new Decimal(0);
-
-  const byTermPayments = await drizzleDb
-    .select()
-    .from(recurringPayments)
-    .where(
-      and(
-        eq(recurringPayments.userId, session.user.id),
-        eq(recurringPayments.paymentType, "by_term"),
-        eq(recurringPayments.isActive, 1)
-      )
-    );
 
   for (const payment of byTermPayments) {
     const typeSpecific = payment.typeSpecific as {
@@ -197,6 +206,18 @@ export async function getCreditCardBillingCycleInfo(
     }
   }
 
+  // Fallback: if no transactions were found and no by_term payments,
+  // use the account's owed_amount as reference (for manually entered balances)
+  let finalNetOwed = netOwed;
+  if (totalCharges.equals(0) && owedAmountDecimal.equals(0) && creditCard.owedAmount) {
+    const accountOwed = new Decimal(creditCard.owedAmount);
+    if (accountOwed.greaterThan(0)) {
+      finalNetOwed = accountOwed;
+    }
+  } else {
+    finalNetOwed = netOwed;
+  }
+
   // Future charges: subscriptions with nextPaymentDate > 30 days from now
   const futureCharges: FutureCharge[] = [];
   const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
@@ -240,7 +261,7 @@ export async function getCreditCardBillingCycleInfo(
     duePaymentDate,
     totalCharges: totalCharges.toString(),
     totalPayments: totalPayments.toString(),
-    netOwed: netOwed.toString(),
+    netOwed: finalNetOwed.toString(),
     owedAmount: owedAmountDecimal.toString(),
     byTermMonthlyPayment: byTermMonthlyPayment.toString(),
     futureCharges,

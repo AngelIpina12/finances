@@ -73,10 +73,14 @@ export async function GET(request: Request) {
         const currentAccumulated = new Decimal(account.accumulatedInterest);
         const newAccumulated = currentAccumulated.minus(interestToUndo);
 
+        // Restore originalPrincipal to balance before interest (balanceAtStart)
+        const originalPrincipalRestored = new Decimal(lastAccrual.balanceAtStart);
+
         await drizzleDb
           .update(fixedIncomeAccounts)
           .set({
             accumulatedInterest: newAccumulated.toString(),
+            originalPrincipal: originalPrincipalRestored.toString(),
             updatedAt: new Date(),
           })
           .where(eq(fixedIncomeAccounts.id, account.id));

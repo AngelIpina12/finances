@@ -69,6 +69,8 @@ interface InterestCalculationResult {
   effectiveRate: string;
   tier1Balance: string;
   tier2Balance: string;
+  tier1BalanceProjected: string;
+  tier2BalanceProjected: string;
 }
 
 function formatCurrency(amount: string, currency: string): string {
@@ -79,11 +81,26 @@ function formatCurrency(amount: string, currency: string): string {
   }).format(num);
 }
 
+function formatInterestSmall(amount: string, currency: string): string {
+  // Show up to 4 decimal places so small Tier 2 interest is visible
+  const num = parseFloat(amount);
+  if (num === 0) return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency,
+  }).format(0);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  }).format(num);
+}
+
 function calculateEffectiveRate(
   balance: Decimal,
   initialRate: string,
   initialLimit: string,
-  originalPrincipal: string,
+  principalBase: string,
   accumulatedInterest: string,
   secondRate: string | null,
   secondLimit: string | null,
@@ -92,39 +109,52 @@ function calculateEffectiveRate(
   const balanceNum = new Decimal(balance);
   const initialRateNum = new Decimal(initialRate);
   const initialLimitNum = new Decimal(initialLimit);
-  const originalPrincipalNum = new Decimal(originalPrincipal);
+  const principalBaseNum = new Decimal(principalBase);
   const secondRateNum = secondRate ? new Decimal(secondRate) : null;
   const secondLimitNum = secondLimit ? new Decimal(secondLimit) : null;
 
   let tier1Balance: Decimal;
   let tier2Balance: Decimal;
 
-  if (compoundFirstTier) {
-    // Compound: TODO el balance va a Tier 1 (el interés compuesto se acumula)
-    tier1Balance = balanceNum;
+  // Determine if we have a second tier active
+  const hasSecondTierActive = secondRateNum !== null;
+
+  if (compoundFirstTier && !hasSecondTierActive) {
+    // Compound without second tier: principal stays in Tier 1
+    tier1Balance = principalBaseNum;
     tier2Balance = new Decimal(0);
+  } else if (compoundFirstTier && hasSecondTierActive) {
+    // Compound WITH second tier: derive principals from principal base
+    // Tier 1 = up to limit, Tier 2 = excess over limit
+    tier1Balance = Decimal.min(principalBaseNum, initialLimitNum);
+    tier2Balance = Decimal.max(new Decimal(0), principalBaseNum.minus(initialLimitNum));
   } else {
-    // Simple: Tier 1 es hasta initialLimit, Tier 2 es lo que excede
-    tier1Balance = Decimal.min(balanceNum, initialLimitNum);
-    tier2Balance = Decimal.max(new Decimal(0), balanceNum.minus(initialLimitNum));
+    // Simple interest (non-compound): derive principals from principal base
+    tier1Balance = Decimal.min(principalBaseNum, initialLimitNum);
+    tier2Balance = Decimal.max(new Decimal(0), principalBaseNum.minus(initialLimitNum));
   }
 
   const dailyRate1 = initialRateNum.dividedBy(365).dividedBy(100);
   const tier1Interest = tier1Balance.times(dailyRate1);
   let tier2Interest = new Decimal(0);
+  let tier2BalanceForCalc = tier2Balance;
 
-  if (tier2Balance.greaterThan(0) && secondRateNum) {
+  if (tier2BalanceForCalc.greaterThan(0) && secondRateNum) {
     const dailyRate2 = secondRateNum.dividedBy(365).dividedBy(100);
 
     if (secondLimitNum) {
-      tier2Balance = Decimal.min(tier2Balance, secondLimitNum);
+      tier2BalanceForCalc = Decimal.min(tier2BalanceForCalc, secondLimitNum);
     }
 
-    tier2Interest = tier2Balance.times(dailyRate2);
+    tier2Interest = tier2BalanceForCalc.times(dailyRate2);
   }
 
   const totalDailyInterest = tier1Interest.plus(tier2Interest);
   const effectiveRate = totalDailyInterest.dividedBy(balanceNum).times(365).times(100);
+
+  // Projected = principal + interest for each tier
+  const tier1BalanceProjected = tier1Balance.plus(tier1Interest);
+  const tier2BalanceProjected = tier2Balance.greaterThan(0) ? tier2Balance.plus(tier2Interest) : new Decimal(0);
 
   return {
     tier1Interest: tier1Interest.toString(),
@@ -133,6 +163,8 @@ function calculateEffectiveRate(
     effectiveRate: effectiveRate.toString(),
     tier1Balance: tier1Balance.toString(),
     tier2Balance: tier2Balance.greaterThan(0) ? tier2Balance.toString() : "0",
+    tier1BalanceProjected: tier1BalanceProjected.toString(),
+    tier2BalanceProjected: tier2BalanceProjected.greaterThan(0) ? tier2BalanceProjected.toString() : "0",
   };
 }
 
@@ -290,6 +322,7 @@ export default function InvestmentsPage() {
 
   // Use account values when editing, otherwise use form values for new accounts
   const previewOriginalPrincipal = isEditMode && editingAccount ? editingAccount.originalPrincipal || "0" : "0";
+  const previewPrincipalBase = isEditMode && editingAccount ? (editingAccount as any).principalBase || previewOriginalPrincipal : previewOriginalPrincipal;
   const previewAccumulatedInterest = isEditMode && editingAccount ? editingAccount.accumulatedInterest || "0" : "0";
   const previewCompoundFirstTier = isEditMode && editingAccount ? editingAccount.compoundFirstTier === 1 : true;
 
@@ -302,7 +335,7 @@ export default function InvestmentsPage() {
           selectedDebitBalance,
           watchedInitialRate,
           watchedInitialLimit,
-          previewOriginalPrincipal,
+          previewPrincipalBase,
           previewAccumulatedInterest,
           watchedHasSecondTier ? (watchedSecondRate || null) : null,
           watchedSecondLimit || null,
@@ -471,7 +504,7 @@ export default function InvestmentsPage() {
                           <span className="text-xl font-bold">{parseFloat(calculation.effectiveRate).toFixed(2)}%</span>
                         </div>
                         <div className="mt-2 text-xs text-muted-foreground">
-                          Interés diario: +{formatCurrency(calculation.totalDailyInterest, account.currency)}
+                          Interés diario: +{formatInterestSmall(calculation.totalDailyInterest, account.currency)}
                         </div>
                       </div>
 
@@ -500,7 +533,7 @@ export default function InvestmentsPage() {
                               </span>
                             </div>
                             <div className="text-xs text-muted-foreground">
-                              Genera: {formatCurrency(calculation.tier2Interest, account.currency)}/día
+                              Genera: {formatInterestSmall(calculation.tier2Interest, account.currency)}/día
                             </div>
                           </div>
                         )}
@@ -741,12 +774,20 @@ export default function InvestmentsPage() {
                 <div className="space-y-1 border-t pt-2 mt-2">
                   <div className="flex justify-between text-sm">
                     <span>Tier 1 ({form.watch("initialInterestRate")}%)</span>
-                    <span>{formatCurrency(previewCalculation.tier1Balance, form.watch("currency"))}</span>
+                    <span className="font-medium">
+                      {previewCompoundFirstTier
+                        ? formatCurrency(previewCalculation.tier1BalanceProjected, form.watch("currency"))
+                        : formatCurrency(previewCalculation.tier1Balance, form.watch("currency"))}
+                    </span>
                   </div>
                   {parseFloat(previewCalculation.tier2Balance) > 0 && (
                     <div className="flex justify-between text-sm">
                       <span>Tier 2 ({form.watch("secondInterestRate") || "0"}%)</span>
-                      <span>{formatCurrency(previewCalculation.tier2Balance, form.watch("currency"))}</span>
+                      <span className="font-medium">
+                        {previewCompoundFirstTier
+                          ? formatCurrency(previewCalculation.tier2BalanceProjected, form.watch("currency"))
+                          : formatCurrency(previewCalculation.tier2Balance, form.watch("currency"))}
+                      </span>
                     </div>
                   )}
                 </div>

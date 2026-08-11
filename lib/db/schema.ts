@@ -202,6 +202,8 @@ export const fixedIncomeAccounts = pgTable('fixed_income_accounts', {
   currency: currencyEnum('currency').notNull().default('USD'),
   // Capital original (depósitos) - base para calcular qué es "nuevo dinero"
   originalPrincipal: decimal('original_principal', { precision: 15, scale: 2 }).notNull().default('0'),
+  // Principal base sin interés del día actual - para derivar tiers
+  principalBase: decimal('principal_base', { precision: 15, scale: 2 }).notNull().default('0'),
   // Tier 1
   initialInterestRate: decimal('initial_interest_rate', { precision: 5, scale: 2 }).notNull(),
   initialAmountLimit: decimal('initial_amount_limit', { precision: 15, scale: 2 }).notNull(),

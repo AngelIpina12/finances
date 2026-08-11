@@ -1,11 +1,11 @@
 "use server";
 
 import { auth } from "@/lib/auth";
-import { drizzleDb, recurringPayments, accounts, type RecurringPayment } from "@/lib/db";
+import { drizzleDb, recurringPayments, accounts, fixedIncomeAccounts, type RecurringPayment } from "@/lib/db";
 import { eq, and, lte } from "drizzle-orm";
 import { recurringPaymentSchema } from "@/types/forms";
 import { revalidatePath } from "next/cache";
-import { addDays, addWeeks, addMonths, addYears, isBefore, setHours, setMinutes, setDate, getDay, getMonth } from "date-fns";
+import { addDays, addWeeks, addMonths, addYears, isBefore, setHours, setMinutes, setDate, getDay, getMonth, startOfMonth, getWeekOfMonth } from "date-fns";
 import Decimal from "decimal.js";
 
 type PaymentType = 'indefinite' | 'by_term' | 'subscription';
@@ -41,6 +41,14 @@ interface TypeSpecificData {
   billingConfig?: CycleConfig;
   paymentDay?: number;
   endDate?: Date;
+  // Payroll income specific
+  isPayroll?: boolean;
+  payrollConfig?: {
+    dayOfWeek: number; // 0=Sun, 1=Mon, ..., 6=Sat
+    regularAmount: string;
+    fifthWeekAmount?: string;
+    hasFifthWeekAdjustment: boolean;
+  };
 }
 
 export async function getRecurringPayments(): Promise<RecurringPayment[]> {
@@ -550,7 +558,16 @@ function calculateNextPaymentDateFromConfig(currentDate: Date, config: CycleConf
       nextDate = addDays(nextDate, config.interval);
       break;
     case 'weekly':
-      nextDate = addWeeks(nextDate, config.interval);
+      if (config.daysOfWeek && config.daysOfWeek.length > 0) {
+        // If daysOfWeek is set, find the next occurrence of that day
+        nextDate = findNextDayOfWeek(nextDate, config.daysOfWeek[0]);
+        // If that day is today or in the past, move to next week
+        if (nextDate <= currentDate) {
+          nextDate = addWeeks(nextDate, config.interval);
+        }
+      } else {
+        nextDate = addWeeks(nextDate, config.interval);
+      }
       break;
     case 'monthly':
       if (hasPerMonthDays && config.perMonthDays) {
@@ -653,6 +670,76 @@ function findNextDayOfWeek(date: Date, dayOfWeek: number): Date {
   const daysUntilTarget = (dayOfWeek - currentDay + 7) % 7;
   if (daysUntilTarget === 0) return current;
   return addDays(current, daysUntilTarget);
+}
+
+/**
+ * Check if a given date is a 5th week occurrence of its day of week in the month.
+ * For payroll purposes: if a month has 5 Thursdays (for example), the last one is the 5th week.
+ */
+function isFifthWeekOfMonth(date: Date, dayOfWeek: number): boolean {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const dayOfMonth = date.getDate();
+
+  // Find the first occurrence of dayOfWeek in this month
+  const firstDayOfMonth = new Date(year, month, 1);
+  const firstDayOfMonthDayOfWeek = getDay(firstDayOfMonth);
+  const daysUntilFirstOccurrence = (dayOfWeek - firstDayOfMonthDayOfWeek + 7) % 7;
+  const firstOccurrence = new Date(year, month, daysUntilFirstOccurrence + 1);
+
+  // Check if there is a 5th occurrence this month
+  // If adding 28 days to first occurrence stays in the same month, there's a 5th week
+  const potential5th = addDays(firstOccurrence, 28);
+  if (potential5th.getMonth() !== month) {
+    // This month has only 4 occurrences, so no 5th week
+    return false;
+  }
+
+  // This month has a 5th occurrence. Check if the given date is that last (5th) occurrence.
+  // Count occurrences up to and including the given date
+  let count = 0;
+  let current = new Date(firstOccurrence);
+  while (current <= date) {
+    if (getDay(current) === dayOfWeek) {
+      count++;
+    }
+    current = addDays(current, 1);
+  }
+
+  // If this is the 5th occurrence, it's the 5th week
+  return count === 5;
+}
+
+/**
+ * Get the week number within the month (1-5) for a given date
+ */
+function getWeekNumberInMonth(date: Date): number {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const dayOfWeek = getDay(date);
+
+  const firstDayOfMonth = new Date(year, month, 1);
+  const firstDayOfMonthDayOfWeek = getDay(firstDayOfMonth);
+
+  const daysUntilFirstOccurrence = (dayOfWeek - firstDayOfMonthDayOfWeek + 7) % 7;
+  const firstOccurrence = daysUntilFirstOccurrence + 1;
+
+  return Math.ceil(firstOccurrence / 7);
+}
+
+/**
+ * Calculate the correct payment amount for a payroll payment based on whether it's a 5th week
+ */
+function getPayrollAmount(payrollConfig: TypeSpecificData['payrollConfig']): string {
+  if (!payrollConfig) return "0";
+
+  const { regularAmount, fifthWeekAmount, hasFifthWeekAdjustment } = payrollConfig;
+
+  if (hasFifthWeekAdjustment && fifthWeekAmount) {
+    return fifthWeekAmount;
+  }
+
+  return regularAmount || "0";
 }
 
 // Get the next payment date for a specific occurrence
@@ -771,6 +858,67 @@ export async function processRecurringPayments(): Promise<{ processed: number; r
             updateData.isActive = 0;
           } else {
             updateData.remainingBalance = newBalance.toString();
+          }
+        }
+
+        // Calculate next payment date
+        const nextDate = await getNextPaymentDateForOccurrence(payment);
+        updateData.nextPaymentDate = nextDate;
+      } else if (typeSpecific.isPayroll && payment.nextPaymentDate) {
+        // For payroll payments, create an income transaction with the appropriate amount
+        const payrollConfig = typeSpecific.payrollConfig;
+        if (payrollConfig && typeSpecific.accountId) {
+          const { transactions } = await import("@/lib/db/schema");
+
+          // Determine the correct amount based on whether it's a 5th week
+          let amount: string;
+          if (payrollConfig.hasFifthWeekAdjustment) {
+            // Check if this payment date is a 5th week
+            const isFifth = isFifthWeekOfMonth(payment.nextPaymentDate, payrollConfig.dayOfWeek);
+            amount = isFifth ? (payrollConfig.fifthWeekAmount || payrollConfig.regularAmount || "0") : (payrollConfig.regularAmount || "0");
+          } else {
+            amount = payrollConfig.regularAmount || "0";
+          }
+
+          // Create an income transaction
+          await drizzleDb.insert(transactions).values({
+            userId: payment.userId,
+            accountId: typeSpecific.accountId,
+            type: "income",
+            categoryId: typeSpecific.categoryId || null,
+            amount: amount,
+            description: payment.name,
+            recurringPaymentId: payment.id,
+            date: payment.nextPaymentDate,
+          });
+
+          // Update the account balance
+          const [account] = await drizzleDb
+            .select()
+            .from(accounts)
+            .where(eq(accounts.id, typeSpecific.accountId))
+            .limit(1);
+
+          if (account) {
+            const newBalance = new Decimal(account.balance).plus(amount).toString();
+            await drizzleDb
+              .update(accounts)
+              .set({ balance: newBalance, updatedAt: new Date() })
+              .where(eq(accounts.id, typeSpecific.accountId));
+
+            // Also update the originalPrincipal of the linked fixed income account
+            const [fiAccount] = await drizzleDb
+              .select()
+              .from(fixedIncomeAccounts)
+              .where(eq(fixedIncomeAccounts.linkedAccountId, typeSpecific.accountId))
+              .limit(1);
+
+            if (fiAccount) {
+              await drizzleDb
+                .update(fixedIncomeAccounts)
+                .set({ originalPrincipal: newBalance, updatedAt: new Date() })
+                .where(eq(fixedIncomeAccounts.id, fiAccount.id));
+            }
           }
         }
 

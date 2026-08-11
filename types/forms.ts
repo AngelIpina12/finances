@@ -138,10 +138,24 @@ export const indefiniteTransactionSchema = z.object({
     z.string().uuid().optional()
   ),
   tagIds: z.array(z.string()).optional(),
+  // amount is optional - for payroll, regularAmount from payrollConfig is used instead
   amount: z.string().refine(
-    (val) => !isNaN(parseFloat(val)) && parseFloat(val) > 0,
+    (val) => val === undefined || val === '' || (!isNaN(parseFloat(val)) && parseFloat(val) > 0),
     'Amount must be a positive number'
-  ),
+  ).optional(),
+  isPayroll: z.boolean().optional(),
+  payrollConfig: z.object({
+    dayOfWeek: z.number().min(0).max(6),
+    regularAmount: z.string().refine(
+      (val) => !isNaN(parseFloat(val)) && parseFloat(val) > 0,
+      'Amount must be a positive number'
+    ),
+    fifthWeekAmount: z.string().refine(
+      (val) => val === undefined || val === '' || (!isNaN(parseFloat(val)) && parseFloat(val) > 0),
+      'Amount must be a positive number'
+    ).optional(),
+    hasFifthWeekAdjustment: z.boolean(),
+  }).optional(),
 });
 
 // Indefinite - Transfer
