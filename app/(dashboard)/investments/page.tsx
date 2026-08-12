@@ -104,7 +104,8 @@ function calculateEffectiveRate(
   accumulatedInterest: string,
   secondRate: string | null,
   secondLimit: string | null,
-  compoundFirstTier: boolean
+  compoundFirstTier: boolean,
+  days: number = 1
 ): InterestCalculationResult {
   const balanceNum = new Decimal(balance);
   const initialRateNum = new Decimal(initialRate);
@@ -121,23 +122,31 @@ function calculateEffectiveRate(
 
   if (compoundFirstTier && !hasSecondTierActive) {
     // Compound without second tier: principal stays in Tier 1
-    tier1Balance = principalBaseNum;
+    tier1Balance = balanceNum;
     tier2Balance = new Decimal(0);
   } else if (compoundFirstTier && hasSecondTierActive) {
-    // Compound WITH second tier: derive principals from principal base
+    // Compound WITH second tier: derive principals from current balance
     // Tier 1 = up to limit, Tier 2 = excess over limit
-    tier1Balance = Decimal.min(principalBaseNum, initialLimitNum);
-    tier2Balance = Decimal.max(new Decimal(0), principalBaseNum.minus(initialLimitNum));
+    tier1Balance = Decimal.min(balanceNum, initialLimitNum);
+    tier2Balance = Decimal.max(new Decimal(0), balanceNum.minus(initialLimitNum));
   } else {
-    // Simple interest (non-compound): derive principals from principal base
-    tier1Balance = Decimal.min(principalBaseNum, initialLimitNum);
-    tier2Balance = Decimal.max(new Decimal(0), principalBaseNum.minus(initialLimitNum));
+    // Simple interest (non-compound): derive principals from current balance
+    tier1Balance = Decimal.min(balanceNum, initialLimitNum);
+    tier2Balance = Decimal.max(new Decimal(0), balanceNum.minus(initialLimitNum));
   }
 
   const dailyRate1 = initialRateNum.dividedBy(365).dividedBy(100);
-  const tier1Interest = tier1Balance.times(dailyRate1);
+  let tier1Interest: Decimal;
   let tier2Interest = new Decimal(0);
   let tier2BalanceForCalc = tier2Balance;
+
+  if (compoundFirstTier) {
+    // Compound interest for Tier 1: principal * ((1 + rate/365)^days - 1)
+    tier1Interest = tier1Balance.times(new Decimal(1).plus(dailyRate1).pow(days)).minus(tier1Balance);
+  } else {
+    // Simple interest for Tier 1
+    tier1Interest = tier1Balance.times(dailyRate1).times(days);
+  }
 
   if (tier2BalanceForCalc.greaterThan(0) && secondRateNum) {
     const dailyRate2 = secondRateNum.dividedBy(365).dividedBy(100);
@@ -146,15 +155,37 @@ function calculateEffectiveRate(
       tier2BalanceForCalc = Decimal.min(tier2BalanceForCalc, secondLimitNum);
     }
 
-    tier2Interest = tier2BalanceForCalc.times(dailyRate2);
+    // Tier 2 always uses simple interest
+    tier2Interest = tier2BalanceForCalc.times(dailyRate2).times(days);
   }
 
   const totalDailyInterest = tier1Interest.plus(tier2Interest);
   const effectiveRate = totalDailyInterest.dividedBy(balanceNum).times(365).times(100);
 
   // Projected = principal + interest for each tier
-  const tier1BalanceProjected = tier1Balance.plus(tier1Interest);
-  const tier2BalanceProjected = tier2Balance.greaterThan(0) ? tier2Balance.plus(tier2Interest) : new Decimal(0);
+  // For compound Tier 1: use compound formula
+  // For simple Tier 2: use simple formula
+  let tier1BalanceProjected: Decimal;
+  let tier2BalanceProjected: Decimal;
+
+  if (compoundFirstTier) {
+    tier1BalanceProjected = tier1Balance.times(new Decimal(1).plus(dailyRate1).pow(days));
+  } else {
+    tier1BalanceProjected = tier1Balance.plus(tier1Interest);
+  }
+
+  if (tier2Balance.greaterThan(0)) {
+    if (compoundFirstTier) {
+      // When compound is active, Tier 2 = balance - Tier 1 projected, then apply simple interest
+      const tier2Base = balanceNum.minus(tier1BalanceProjected);
+      const dailyRate2 = secondRateNum!.dividedBy(365).dividedBy(100);
+      tier2BalanceProjected = tier2Base.times(new Decimal(1).plus(dailyRate2.times(days)));
+    } else {
+      tier2BalanceProjected = tier2Balance.plus(tier2Interest);
+    }
+  } else {
+    tier2BalanceProjected = new Decimal(0);
+  }
 
   return {
     tier1Interest: tier1Interest.toString(),
@@ -325,9 +356,16 @@ export default function InvestmentsPage() {
   const previewPrincipalBase = isEditMode && editingAccount ? (editingAccount as any).principalBase || previewOriginalPrincipal : previewOriginalPrincipal;
   const previewAccumulatedInterest = isEditMode && editingAccount ? editingAccount.accumulatedInterest || "0" : "0";
   const previewCompoundFirstTier = isEditMode && editingAccount ? editingAccount.compoundFirstTier === 1 : true;
+  const previewLastAccrualDate = isEditMode && editingAccount ? editingAccount.lastAccrualDate : null;
+
+  // Show projected balances (with compound interest) when compoundFirstTier is enabled
+  const showProjectedBalances = previewCompoundFirstTier;
 
   // Preview "what if": when compoundFirstTier is true, Tier 1 = full balance (ignoring limit)
   const previewTier1Balance = previewCompoundFirstTier ? selectedDebitBalance : new Decimal(previewOriginalPrincipal);
+
+  // When compound is active, show 3 days of projected compound growth in the preview
+  const previewDays = previewCompoundFirstTier ? 3 : 1;
 
   const previewCalculation =
     selectedDebitBalance.greaterThan(0) && watchedInitialRate && watchedInitialLimit
@@ -339,7 +377,8 @@ export default function InvestmentsPage() {
           previewAccumulatedInterest,
           watchedHasSecondTier ? (watchedSecondRate || null) : null,
           watchedSecondLimit || null,
-          previewCompoundFirstTier
+          previewCompoundFirstTier,
+          previewDays
         )
       : null;
 
@@ -775,7 +814,7 @@ export default function InvestmentsPage() {
                   <div className="flex justify-between text-sm">
                     <span>Tier 1 ({form.watch("initialInterestRate")}%)</span>
                     <span className="font-medium">
-                      {previewCompoundFirstTier
+                      {showProjectedBalances
                         ? formatCurrency(previewCalculation.tier1BalanceProjected, form.watch("currency"))
                         : formatCurrency(previewCalculation.tier1Balance, form.watch("currency"))}
                     </span>
@@ -784,7 +823,7 @@ export default function InvestmentsPage() {
                     <div className="flex justify-between text-sm">
                       <span>Tier 2 ({form.watch("secondInterestRate") || "0"}%)</span>
                       <span className="font-medium">
-                        {previewCompoundFirstTier
+                        {showProjectedBalances
                           ? formatCurrency(previewCalculation.tier2BalanceProjected, form.watch("currency"))
                           : formatCurrency(previewCalculation.tier2Balance, form.watch("currency"))}
                       </span>
