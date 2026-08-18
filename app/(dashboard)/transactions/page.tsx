@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Loader2, Plus, ArrowUpCircle, ArrowDownCircle, Trash2, ImageIcon } from "lucide-react";
+import { Loader2, Plus, ArrowUpCircle, ArrowDownCircle, Trash2, ArrowLeftRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -53,13 +53,14 @@ import { format } from "date-fns";
 import { CalendarIcon } from "lucide-react";
 
 const transactionFormSchema = z.object({
-  accountId: z.string().min(1, "La cuenta es requerida"),
-  type: z.enum(["income", "expense"]),
-  categoryId: z.string().min(1, "La categoría es requerida"),
+  accountId: z.string().min(1, "La cuenta de origen es requerida"),
+  type: z.enum(["income", "expense", "transfer"]),
+  categoryId: z.string().optional(),
   amount: z.string().min(1, "El monto es requerido"),
   description: z.string().optional(),
   tagIds: z.array(z.string()).optional(),
   date: z.date(),
+  transferAccountId: z.string().optional(),
 });
 
 type TransactionFormData = z.infer<typeof transactionFormSchema>;
@@ -69,11 +70,13 @@ type TransactionStep = "type" | "category" | "form";
 const TYPE_COLORS: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   income: "default",
   expense: "destructive",
+  transfer: "secondary",
 };
 
 const TYPE_ICONS: Record<string, React.ReactNode> = {
   income: <ArrowUpCircle className="h-4 w-4 text-green-500" />,
   expense: <ArrowDownCircle className="h-4 w-4 text-red-500" />,
+  transfer: <ArrowLeftRight className="h-4 w-4 text-blue-500" />,
 };
 
 function formatCurrency(amount: string): string {
@@ -98,7 +101,7 @@ export default function TransactionsPage() {
   // Modal state - 3 step flow
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalStep, setModalStep] = useState<TransactionStep>("type");
-  const [selectedType, setSelectedType] = useState<"income" | "expense" | null>(null);
+  const [selectedType, setSelectedType] = useState<"income" | "expense" | "transfer" | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
 
   const form = useForm<TransactionFormData>({
@@ -158,11 +161,12 @@ export default function TransactionsPage() {
       await createTransaction({
         accountId: data.accountId,
         type: data.type,
-        categoryId: data.categoryId,
+        categoryId: data.categoryId || undefined,
         amount: data.amount,
         description: data.description,
         tagIds: data.tagIds,
         date: data.date,
+        transferAccountId: data.transferAccountId,
       });
       closeModal();
       await fetchData();
@@ -198,13 +202,19 @@ export default function TransactionsPage() {
       description: "",
       tagIds: [],
       date: new Date(),
+      transferAccountId: "",
     });
   }
 
-  function handleTypeSelect(type: "income" | "expense") {
+  function handleTypeSelect(type: "income" | "expense" | "transfer") {
     setSelectedType(type);
     form.setValue("type", type);
-    setModalStep("category");
+    // Transfers skip category selection
+    if (type === "transfer") {
+      setModalStep("form");
+    } else {
+      setModalStep("category");
+    }
   }
 
   function handleCategorySelect(categoryId: string) {
@@ -236,6 +246,7 @@ export default function TransactionsPage() {
       const amount = parseFloat(txn.amount) || 0;
       if (txn.type === "income") acc.income += amount;
       else if (txn.type === "expense") acc.expense += amount;
+      // transfers are neutral - no effect on totals
       return acc;
     },
     { income: 0, expense: 0 }
@@ -295,16 +306,18 @@ export default function TransactionsPage() {
             </DialogTitle>
             <DialogDescription>
               {modalStep === "type"
-                ? "¿Es un ingreso o un egreso?"
+                ? "¿Es un ingreso, egreso o una transferencia?"
                 : modalStep === "category"
                 ? `Categorías de ${selectedType === "income" ? "ingreso" : "egreso"}`
+                : selectedType === "transfer"
+                ? "Completa los datos de la transferencia."
                 : "Completa los datos de la transacción."}
             </DialogDescription>
           </DialogHeader>
 
           {/* Step 1: Type Selection */}
           {modalStep === "type" && (
-            <div className="grid grid-cols-2 gap-4 py-4">
+            <div className="grid grid-cols-3 gap-4 py-4">
               <button
                 type="button"
                 onClick={() => handleTypeSelect("income")}
@@ -325,6 +338,17 @@ export default function TransactionsPage() {
                 <span className="text-lg font-medium">Egreso</span>
                 <span className="text-sm text-muted-foreground mt-1">
                   Dinero que gastas
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTypeSelect("transfer")}
+                className="flex flex-col items-center justify-center rounded-lg border-2 border-border p-8 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+              >
+                <ArrowLeftRight className="h-12 w-12 text-blue-500 mb-3" />
+                <span className="text-lg font-medium">Transferencia</span>
+                <span className="text-sm text-muted-foreground mt-1">
+                  Entre cuentas
                 </span>
               </button>
             </div>
@@ -385,48 +409,60 @@ export default function TransactionsPage() {
           {/* Step 3: Transaction Form */}
           {modalStep === "form" && (
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 py-4">
-              {/* Category display */}
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-muted">
-                <div
-                  className="h-8 w-8 rounded-md flex items-center justify-center"
-                  style={{
-                    backgroundColor:
-                      categories.find((c) => c.id === selectedCategoryId)?.color ||
-                      "#3B82F6",
-                  }}
-                >
-                  {selectedCategoryId &&
-                  categories.find((c) => c.id === selectedCategoryId)?.iconUrl ? (
-                    <img
-                      src={
-                        categories.find((c) => c.id === selectedCategoryId)?.iconUrl!
-                      }
-                      alt=""
-                      className="h-5 w-5 object-contain"
-                    />
-                  ) : (
-                    <span className="text-sm">
-                      {selectedType === "income" ? "📈" : "📉"}
-                    </span>
-                  )}
+              {/* Category display - hidden for transfers */}
+              {selectedType !== "transfer" && (
+                <div className="flex items-center gap-3 p-3 rounded-lg bg-muted">
+                  <div
+                    className="h-8 w-8 rounded-md flex items-center justify-center"
+                    style={{
+                      backgroundColor:
+                        categories.find((c) => c.id === selectedCategoryId)?.color ||
+                        "#3B82F6",
+                    }}
+                  >
+                    {selectedCategoryId &&
+                    categories.find((c) => c.id === selectedCategoryId)?.iconUrl ? (
+                      <img
+                        src={
+                          categories.find((c) => c.id === selectedCategoryId)?.iconUrl!
+                        }
+                        alt=""
+                        className="h-5 w-5 object-contain"
+                      />
+                    ) : (
+                      <span className="text-sm">
+                        {selectedType === "income" ? "📈" : "📉"}
+                      </span>
+                    )}
+                  </div>
+                  <span className="font-medium">
+                    {getCategoryName(selectedCategoryId)}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => setModalStep("category")}
+                  >
+                    Cambiar
+                  </Button>
                 </div>
-                <span className="font-medium">
-                  {getCategoryName(selectedCategoryId)}
-                </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={() => setModalStep("category")}
-                >
-                  Cambiar
-                </Button>
-              </div>
+              )}
 
-              {/* Account */}
+              {/* Transfer header */}
+              {selectedType === "transfer" && (
+                <div className="flex items-center gap-3 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20">
+                  <ArrowLeftRight className="h-5 w-5 text-blue-500" />
+                  <span className="font-medium text-blue-700 dark:text-blue-300">
+                    Transferencia entre cuentas
+                  </span>
+                </div>
+              )}
+
+              {/* Account (From for transfer) */}
               <div className="space-y-2">
-                <Label>Cuenta</Label>
+                <Label>{selectedType === "transfer" ? "Desde" : "Cuenta"}</Label>
                 <Select
                   onValueChange={(value) => form.setValue("accountId", value)}
                   defaultValue={form.getValues("accountId")}
@@ -448,6 +484,35 @@ export default function TransactionsPage() {
                   </p>
                 )}
               </div>
+
+              {/* Transfer Account (To) */}
+              {selectedType === "transfer" && (
+                <div className="space-y-2">
+                  <Label>Hacia</Label>
+                  <Select
+                    onValueChange={(value) => form.setValue("transferAccountId", value)}
+                    defaultValue={form.getValues("transferAccountId")}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleccionar cuenta destino" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {accounts
+                        .filter((account) => account.id !== form.getValues("accountId"))
+                        .map((account) => (
+                          <SelectItem key={account.id} value={account.id}>
+                            {account.name}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                  {form.formState.errors.transferAccountId && (
+                    <p className="text-sm text-red-500">
+                      {form.formState.errors.transferAccountId.message}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Amount */}
               <div className="space-y-2">
@@ -476,8 +541,8 @@ export default function TransactionsPage() {
                 />
               </div>
 
-              {/* Tags */}
-              {currentTags.length > 0 && (
+              {/* Tags - hidden for transfers */}
+              {currentTags.length > 0 && selectedType !== "transfer" && (
                 <div className="space-y-2">
                   <Label>Etiquetas</Label>
                   <div className="flex flex-wrap gap-2">
@@ -552,7 +617,7 @@ export default function TransactionsPage() {
                   {isSubmitting && (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   )}
-                  Crear Transacción
+                  {selectedType === "transfer" ? "Crear Transferencia" : "Crear Transacción"}
                 </Button>
               </div>
             </form>
@@ -629,6 +694,7 @@ export default function TransactionsPage() {
             <SelectItem value="all">Todos los Tipos</SelectItem>
             <SelectItem value="income">Ingreso</SelectItem>
             <SelectItem value="expense">Egreso</SelectItem>
+            <SelectItem value="transfer">Transferencia</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -666,7 +732,7 @@ export default function TransactionsPage() {
                   <TableCell>
                     <Badge variant={TYPE_COLORS[txn.type]}>
                       <span className="mr-1">{TYPE_ICONS[txn.type]}</span>
-                      {txn.type === "income" ? "Ingreso" : "Egreso"}
+                      {txn.type === "income" ? "Ingreso" : txn.type === "expense" ? "Egreso" : "Transferencia"}
                     </Badge>
                   </TableCell>
                   <TableCell>{getCategoryName(txn.categoryId)}</TableCell>

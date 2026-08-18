@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Loader2, Plus, Pencil, Trash2, AlertTriangle, BarChart3, List, ArrowLeft, Check, ArrowRight, CalendarIcon, CreditCard, RefreshCw } from "lucide-react";
+import { Loader2, Plus, Pencil, Trash2, AlertTriangle, BarChart3, List, ArrowLeft, Check, ArrowRight, CalendarIcon, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -37,20 +37,13 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Progress } from "@/components/ui/progress";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend, LineChart, Line } from "recharts";
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from "recharts";
 import {
   getBudgetProgress,
   deleteBudget,
   updateBudget,
   createBudget,
 } from "@/server/actions/budget-actions";
-import {
-  projectFullBudgetWithCC,
-  projectFullFinancialPosition,
-  type BudgetProjectionWithIncome,
-  type FullBudgetProjectionResult,
-} from "@/server/actions/budget-projection-actions";
-import { getUserCreditCards, projectCreditCardDebt, type CCDebtProjection } from "@/server/actions/budget-cc-actions";
 import { ProjectionControls, type Granularity } from "@/components/budget/projection-controls";
 import type { BudgetProgress } from "@/server/actions/budget-actions";
 import { addMonths, format, startOfDay } from "date-fns";
@@ -67,22 +60,13 @@ import { cn } from "@/lib/utils";
 import { getCategories } from "@/server/actions/category-actions";
 import { Account } from "@/types";
 import { Category, RecurringPayment } from "@/lib/db";
-import { getRecurringPayments } from "@/server/actions/recurring-actions";
+import { getRecurringPayments, projectRecurringCashFlow, type CashFlowProjection } from "@/server/actions/recurring-actions";
 import { CategoryBudgetChart } from "@/components/budget/category-budget-chart";
+import { ProjectionTooltip } from "@/components/budget/projection-tooltip";
 
-interface CCAllocation {
-  categoryId: string;
-  monthlyAmount: string;
-}
+type WizardStep = "basic" | "hierarchy" | "categories" | "review";
 
-interface CCAccountEntry {
-  creditAccountId: string;
-  categoryAllocations: CCAllocation[];
-}
-
-type WizardStep = "basic" | "hierarchy" | "creditCards" | "categories" | "review";
-
-const STEPS: WizardStep[] = ["basic", "hierarchy", "creditCards", "categories", "review"];
+const STEPS: WizardStep[] = ["basic", "hierarchy", "categories", "review"];
 
 const PERIOD_LABELS: Record<string, string> = {
   daily: "Daily",
@@ -150,15 +134,13 @@ export default function BudgetsPage() {
   const [viewMode, setViewMode] = useState<"list" | "projections">("list");
 
   // Projection state
-  const [projectionData, setProjectionData] = useState<BudgetProjectionWithIncome[]>([]);
+  const [projectionData, setProjectionData] = useState<CashFlowProjection[]>([]);
   const [granularity, setGranularity] = useState<Granularity>("month");
   const [startDate, setStartDate] = useState(addMonths(startOfDay(new Date()), -3));
   const [endDate, setEndDate] = useState(startOfDay(new Date()));
   const [isProjectionsLoading, setIsProjectionsLoading] = useState(false);
   const [monthsAhead, setMonthsAhead] = useState(3);
-  const [ccDebtProjections, setCCDebtProjections] = useState<CCDebtProjection[]>([]);
 
-  const [creditCards, setCreditCards] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
 
   const form: UseFormReturn<any> = useForm({
@@ -177,9 +159,6 @@ export default function BudgetsPage() {
         categoryId: a.categoryId,
         amount: a.amount,
       })),
-      autoCalculateAllocations: editingBudget?.budget.autoCalculateAllocations ?? false,
-      hasCreditCardTracking: editingBudget?.budget.hasCreditCardTracking ?? false,
-      ccAccounts: editingBudget?.budget.ccAccounts || [],
     }
   });
 
@@ -199,12 +178,8 @@ export default function BudgetsPage() {
   async function fetchProjections() {
     try {
       setIsProjectionsLoading(true);
-      const data = await projectFullFinancialPosition(startDate, endDate, granularity);
+      const data = await projectRecurringCashFlow(monthsAhead, startDate, endDate);
       setProjectionData(data);
-
-      // Also fetch CC debt projections
-      const ccData = await projectCreditCardDebt("", monthsAhead);
-      setCCDebtProjections(ccData);
     } catch (err) {
       console.error("Failed to load projections:", err);
     } finally {
@@ -215,8 +190,6 @@ export default function BudgetsPage() {
   const currentStepIndex = STEPS.indexOf(currentStep);
   const progress = ((currentStepIndex + 1) / STEPS.length) * 100;
   const isGlobal = form.watch("isGlobal");
-  const hasCCTracking = form.watch("hasCreditCardTracking");
-  const ccAccounts = form.watch("ccAccounts") || [];
   const allocations = form.watch("allocations") || [];
   const budgetType = form.watch("type");
   
@@ -257,11 +230,7 @@ export default function BudgetsPage() {
     async function fetchData() {
       setIsLoading(true);
       try {
-        const [cards, cats] = await Promise.all([
-          getUserCreditCards(),
-          getCategories("expense"),
-        ]);
-        setCreditCards(cards);
+        const cats = await getCategories("expense");
         setCategories(cats);
       } catch (e) {
         console.error("Failed to fetch data", e);
@@ -271,13 +240,6 @@ export default function BudgetsPage() {
     }
     fetchData();
   }, []);
-
-  // Initialize with empty CC accounts if CC tracking enabled but no accounts set
-  useEffect(() => {
-    if (hasCCTracking && ccAccounts.length === 0) {
-      form.setValue("ccAccounts", []);
-    }
-  }, [hasCCTracking, ccAccounts.length, form]);
 
   async function handleDelete() {
     if (!deleteBudgetId) return;
@@ -451,23 +413,6 @@ export default function BudgetsPage() {
               />
             </div>
 
-            {/* Credit Card Tracking Toggle - only for expense budgets */}
-            {form.watch("type") === "expense" && (
-              <div className="flex items-center justify-between p-4 border rounded-lg">
-                <div className="space-y-0.5">
-                  <Label htmlFor="hasCreditCardTracking">Track credit card spending</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Project credit card debt accumulation and payments based on recurring
-                    payments and planned category spending.
-                  </p>
-                </div>
-                <Switch
-                  id="hasCreditCardTracking"
-                  checked={form.watch("hasCreditCardTracking")}
-                  onCheckedChange={(checked) => form.setValue("hasCreditCardTracking", checked)}
-                />
-              </div>
-            )}
           </div>
         );
       case "hierarchy":
@@ -566,247 +511,10 @@ export default function BudgetsPage() {
             )}
           </div>
         );
-      case "creditCards":
-        // return <CreditCardStep form={form} />;
-        {
-          const addCCAccount = () => {
-            form.setValue("ccAccounts", [
-              ...ccAccounts,
-              { creditAccountId: "", categoryAllocations: [] },
-            ]);
-          };
-
-          const removeCCAccount = (index: number) => {
-            form.setValue(
-              "ccAccounts",
-              ccAccounts.filter((_: any, i: number) => i !== index)
-            );
-          };
-
-          const updateCCAccount = (index: number, field: string, value: string) => {
-            const updated = [...ccAccounts];
-            updated[index] = { ...updated[index], [field]: value };
-            form.setValue("ccAccounts", updated);
-          };
-
-          const addCategoryAllocation = (ccIndex: number) => {
-            const updated = [...ccAccounts];
-            updated[ccIndex].categoryAllocations.push({ categoryId: "", monthlyAmount: "" });
-            form.setValue("ccAccounts", updated);
-            form.trigger("ccAccounts");
-          };
-
-          const removeCategoryAllocation = (ccIndex: number, allocIndex: number) => {
-            const updated = [...ccAccounts];
-            updated[ccIndex].categoryAllocations = updated[ccIndex].categoryAllocations.filter(
-              (_: any, i: number) => i !== allocIndex
-            );
-            form.setValue("ccAccounts", updated);
-            form.trigger("ccAccounts");
-          };
-
-          const updateCategoryAllocation = (
-            ccIndex: number,
-            allocIndex: number,
-            field: string,
-            value: string
-          ) => {
-            const updated = [...ccAccounts];
-            updated[ccIndex].categoryAllocations[allocIndex] = {
-              ...updated[ccIndex].categoryAllocations[allocIndex],
-              [field]: value,
-            };
-            form.setValue("ccAccounts", updated);
-            form.trigger("ccAccounts");
-          };
-
-          const totalMonthlySpending = ccAccounts.reduce((sum: number, cc: typeof ccAccounts[number]) => {
-            return sum + cc.categoryAllocations.reduce(
-              (s: number, alloc: typeof cc.categoryAllocations[number]) => s + (parseFloat(alloc.monthlyAmount) || 0),
-              0
-            );
-          }, 0);
-
-          // Get categories already assigned to CC
-          const assignedCategoryIds = new Set(
-            ccAccounts.flatMap((cc: typeof ccAccounts[number]) =>
-              cc.categoryAllocations.map((a: typeof cc.categoryAllocations[number]) => a.categoryId).filter(Boolean)
-            )
-          );
-
-          if (!hasCCTracking) {
-            return (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <h3 className="text-lg font-medium">Credit Card Debt Projections</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Enable credit card tracking in the previous step to configure CC debt projections.
-                  </p>
-                </div>
-              </div>
-            );
-          }
-
-          if (isLoading) {
-            return <div className="flex items-center justify-center p-8">Loading credit cards...</div>;
-          }
-
-          if (creditCards.length === 0) {
-            return (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <h3 className="text-lg font-medium">Credit Card Debt Projections</h3>
-                  <p className="text-sm text-muted-foreground">
-                    No credit cards found. Add a credit card account first to enable CC debt tracking.
-                  </p>
-                </div>
-              </div>
-            );
-          }
-
-          return (
-            <div className="space-y-6">
-              <div className="space-y-2">
-                <h3 className="text-lg font-medium">Credit Card Debt Projections</h3>
-                <p className="text-sm text-muted-foreground">
-                  Select credit cards and assign monthly spending amounts per category.
-                  This will be used to project your debt accumulation.
-                </p>
-              </div>
-
-              {/* Credit Card Selection */}
-              {ccAccounts.map((cc: CCAccountEntry, ccIndex: number) => {
-                const selectedCard = creditCards.find(c => c.id === cc.creditAccountId);
-
-                return (
-                  <div key={ccIndex} className="p-4 border rounded-lg space-y-4">
-                    <div className="flex items-end gap-2">
-                      <div className="flex-1 space-y-1">
-                        <Label>Credit Card</Label>
-                        <Select
-                          value={cc.creditAccountId}
-                          onValueChange={(v) => updateCCAccount(ccIndex, "creditAccountId", v)}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select credit card" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {creditCards.map(card => (
-                              <SelectItem key={card.id} value={card.id}>
-                                {card.name} {(card.billingDate && card.dueDate) &&
-                                  `(${card.billingDate}/${card.dueDate})`}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => removeCCAccount(ccIndex)}
-                      >
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </div>
-
-                    {/* Category Allocations for this CC */}
-                    {cc.creditAccountId && (
-                      <div className="space-y-3 pl-4 border-l-2 border-muted">
-                        <Label className="text-sm font-medium">Category Spending</Label>
-                        {cc.categoryAllocations.map((alloc: CCAllocation, allocIndex: number) => {
-                          const availableCategories = categories.filter(
-                            cat => !assignedCategoryIds.has(cat.id) || alloc.categoryId === cat.id
-                          );
-
-                          return (
-                            <div key={allocIndex} className="flex gap-2 items-end">
-                              <div className="flex-1 space-y-1">
-                                <Select
-                                  value={alloc.categoryId}
-                                  onValueChange={(v) => updateCategoryAllocation(ccIndex, allocIndex, "categoryId", v)}
-                                >
-                                  <SelectTrigger>
-                                    <SelectValue placeholder="Select category" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    {availableCategories.map(cat => (
-                                      <SelectItem key={cat.id} value={cat.id}>
-                                        {cat.name}
-                                      </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                              <div className="w-32 space-y-1">
-                                <Input
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  value={alloc.monthlyAmount}
-                                  onChange={(e) => updateCategoryAllocation(ccIndex, allocIndex, "monthlyAmount", e.target.value)}
-                                  placeholder="0.00"
-                                />
-                              </div>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => removeCategoryAllocation(ccIndex, allocIndex)}
-                              >
-                                <Trash2 className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </div>
-                          );
-                        })}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => addCategoryAllocation(ccIndex)}
-                        >
-                          <Plus className="mr-2 h-4 w-4" />
-                          Add Category
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-
-              <Button type="button" variant="outline" onClick={addCCAccount} className="w-full">
-                <CreditCard className="mr-2 h-4 w-4" />
-                Add Credit Card
-              </Button>
-
-              {/* Summary */}
-              {totalMonthlySpending > 0 && (
-                <div className="p-4 bg-primary/5 border border-primary/20 rounded-lg">
-                  <div className="flex justify-between items-center">
-                    <span className="font-medium">Total Monthly CC Spending</span>
-                    <span className="text-2xl font-bold">
-                      {formatCurrency(totalMonthlySpending)}
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    This amount will be added to your debt projections each month
-                  </p>
-                </div>
-              )}
-            </div>
-          );
-        }
       case "categories":
         // return <CategoriesStep form={form} />;
         {
 
-
-          // Get categories already assigned to CC
-          const ccAssignedCategoryIds = new Set(
-            ccAccounts.flatMap((cc: any) =>
-              cc.categoryAllocations?.map((a: any) => a.categoryId).filter(Boolean) || []
-            )
-          );
 
           const toggleRecurring = (id: string) => {
             const newSet = new Set(selectedRecurringIds);
@@ -840,8 +548,7 @@ export default function BudgetsPage() {
 
           const availableCategories = categories.filter(
             (c) =>
-              !allocations.some((a: any) => a.categoryId === c.id && !a.isRecurring) &&
-              !ccAssignedCategoryIds.has(c.id)
+              !allocations.some((a: any) => a.categoryId === c.id && !a.isRecurring)
           );
 
           const byTermPayments = recurringPayments.filter((p) => p.paymentType === "by_term");
@@ -855,16 +562,6 @@ export default function BudgetsPage() {
                   Set amounts for each category. Select recurring payments to include.
                 </p>
               </div>
-
-              {/* Notice about CC-assigned categories */}
-              {ccAssignedCategoryIds.size > 0 && (
-                <div className="p-3 bg-muted/50 rounded-lg text-sm">
-                  <p className="text-muted-foreground">
-                    {ccAssignedCategoryIds.size} category(ies) are being tracked via credit cards
-                    and are not shown here. Configure them in the Credit Card step.
-                  </p>
-                </div>
-              )}
 
               {/* Recurring Payments Section */}
               <div className="space-y-4 p-4 border rounded-lg bg-muted/30">
@@ -1229,42 +926,6 @@ export default function BudgetsPage() {
                     </p>
                   </div>
                 )}
-
-                {/* Credit Card Tracking */}
-                {data.hasCreditCardTracking && data.ccAccounts && data.ccAccounts.length > 0 && (
-                  <div className="p-4 border rounded-lg space-y-3">
-                    <h4 className="font-medium">Credit Card Projections</h4>
-                    <p className="text-xs text-muted-foreground">
-                      Debt will be projected based on the following credit card allocations:
-                    </p>
-                    <div className="space-y-3">
-                      {data.ccAccounts.map((cc: any, idx: number) => {
-                        const totalForCard = cc.categoryAllocations?.reduce(
-                          (sum: number, a: any) => sum + (parseFloat(a.monthlyAmount) || 0),
-                          0
-                        ) || 0;
-
-                        return (
-                          <div key={idx} className="space-y-2">
-                            <div className="flex justify-between text-sm font-medium">
-                              <span>{cc.creditAccountId || `Card ${idx + 1}`}</span>
-                              <span>{formatCurrency(totalForCard)}/month</span>
-                            </div>
-                            {cc.categoryAllocations?.map((alloc: any, aIdx: number) => (
-                              <div
-                                key={aIdx}
-                                className="flex justify-between text-xs pl-4 text-muted-foreground"
-                              >
-                                <span>{alloc.categoryId || `Category ${aIdx + 1}`}</span>
-                                <span>{formatCurrency(parseFloat(alloc.monthlyAmount) || 0)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
           );
@@ -1281,9 +942,6 @@ export default function BudgetsPage() {
       // Skip categories step if global
       if (nextStep === "categories" && isGlobal) {
         setCurrentStep("review");
-        // Skip creditCards step if CC tracking is disabled
-      } else if (nextStep === "creditCards" && !hasCCTracking) {
-        setCurrentStep("categories");
       } else {
         setCurrentStep(nextStep);
       }
@@ -1296,9 +954,6 @@ export default function BudgetsPage() {
       const prevStep = STEPS[idx - 1];
       // Skip categories step if global
       if (prevStep === "categories" && isGlobal) {
-        setCurrentStep("basic");
-        // Skip creditCards step if CC tracking is disabled
-      } else if (prevStep === "creditCards" && !hasCCTracking) {
         setCurrentStep("basic");
       } else {
         setCurrentStep(prevStep);
@@ -1680,15 +1335,15 @@ export default function BudgetsPage() {
             </Card>
           ) : (
             <>
-              {/* Projection Chart */}
+              {/* Income vs Expenses Chart */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Liquid Funds Projection</CardTitle>
+                  <CardTitle>Income vs Expenses</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={projectionData}>
+                      <BarChart data={projectionData}>
                         <CartesianGrid strokeDasharray="3 3" className="stroke-border/50" />
                         <XAxis
                           dataKey="periodLabel"
@@ -1700,231 +1355,101 @@ export default function BudgetsPage() {
                           tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
                         />
                         <Tooltip
-                          formatter={(value: number) => [formatCurrency(value), ""]}
-                          labelFormatter={(label) => `Period: ${label}`}
+                          content={({ active, payload, label, coordinate }) => (
+                            <ProjectionTooltip
+                              active={active}
+                              payload={payload}
+                              label={label as string}
+                              projection={projectionData.find(p => p.periodLabel === label)}
+                              coordinate={coordinate}
+                            />
+                          )}
                         />
-                        <Area
-                          type="monotone"
-                          dataKey="cumulativeLiquidFunds"
-                          stroke="hsl(var(--chart-1))"
+                        <Legend />
+                        <Bar
+                          dataKey="projectedIncome"
+                          name="Income"
+                          fill="hsl(var(--chart-2))"
+                        />
+                        <Bar
+                          dataKey="projectedExpenses"
+                          name="Expenses"
                           fill="hsl(var(--chart-1))"
-                          fillOpacity={0.3}
                         />
-                      </AreaChart>
+                      </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </CardContent>
               </Card>
 
-              {/* Income vs Expenses Chart */}
-              <div className="grid gap-6 md:grid-cols-2">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Income vs Expenses</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="h-[250px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={projectionData}>
-                          <CartesianGrid strokeDasharray="3 3" className="stroke-border/50" />
-                          <XAxis
-                            dataKey="periodLabel"
-                            tick={{ fontSize: 10 }}
-                            interval="preserveStartEnd"
-                          />
-                          <YAxis
-                            tick={{ fontSize: 12 }}
-                            tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
-                          />
-                          <Tooltip
-                            formatter={(value: number) => [formatCurrency(value), ""]}
-                          />
-                          <Legend />
-                          <Bar
-                            dataKey="projectedIncome"
-                            name="Income"
-                            fill="hsl(var(--chart-2))"
-                          />
-                          <Bar
-                            dataKey="projectedExpenses"
-                            name="Expenses"
-                            fill="hsl(var(--chart-1))"
-                          />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Net Position */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Net Position</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="h-[250px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={projectionData}>
-                          <CartesianGrid strokeDasharray="3 3" className="stroke-border/50" />
-                          <XAxis
-                            dataKey="periodLabel"
-                            tick={{ fontSize: 10 }}
-                            interval="preserveStartEnd"
-                          />
-                          <YAxis
-                            tick={{ fontSize: 12 }}
-                            tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
-                          />
-                          <Tooltip
-                            formatter={(value: number) => [formatCurrency(value), ""]}
-                          />
-                          <Bar
-                            dataKey="netPosition"
-                            name="Net Position"
-                            fill="hsl(var(--chart-3))"
-                          />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-
-              {/* CC Debt Projections Chart */}
-              {ccDebtProjections.length > 0 && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Credit Card Debt Projections</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-6">
-                    {ccDebtProjections.map((cc) => (
-                      <div key={cc.creditAccountId} className="space-y-2">
-                        <div className="flex justify-between items-center">
-                          <h4 className="font-medium">{cc.accountName}</h4>
-                          <span className="text-xs text-muted-foreground">
-                            Billing: {cc.billingDate} / Due: {cc.dueDate}
-                          </span>
-                        </div>
-                        <div className="h-[200px]">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={cc.projections}>
-                              <CartesianGrid strokeDasharray="3 3" className="stroke-border/50" />
-                              <XAxis
-                                dataKey="periodLabel"
-                                tick={{ fontSize: 10 }}
-                                interval="preserveStartEnd"
-                              />
-                              <YAxis
-                                tick={{ fontSize: 12 }}
-                                tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
-                              />
-                              <Tooltip
-                                formatter={(value: number) => [formatCurrency(value), ""]}
-                              />
-                              <Legend />
-                              <Bar
-                                dataKey="totalNewDebt"
-                                name="New Debt"
-                                fill="hsl(var(--chart-1))"
-                              />
-                              <Bar
-                                dataKey="prePlannedSpending"
-                                name="Pre-planned"
-                                fill="hsl(var(--chart-4))"
-                              />
-                              <Line
-                                type="monotone"
-                                dataKey="cumulativeDebt"
-                                name="Cumulative Debt"
-                                stroke="hsl(var(--chart-3))"
-                                strokeWidth={2}
-                              />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Summary Table for CC */}
-                    <div className="border-t pt-4">
-                      <h4 className="font-medium mb-3">CC Debt Summary</h4>
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Credit Card</TableHead>
-                            <TableHead className="text-right">Monthly Payment</TableHead>
-                            <TableHead className="text-right">Remaining MSI</TableHead>
-                            <TableHead className="text-right">Final Debt</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {ccDebtProjections.map((cc) => {
-                            const lastProjection = cc.projections[cc.projections.length - 1];
-                            const totalMonthlyPayment = cc.projections.reduce(
-                              (sum, p) => sum + p.byTermMonthlyPayment + p.subscriptionTotal,
-                              0
-                            ) / cc.projections.length;
-                            return (
-                              <TableRow key={cc.creditAccountId}>
-                                <TableCell className="font-medium">{cc.accountName}</TableCell>
-                                <TableCell className="text-right">
-                                  {formatCurrency(totalMonthlyPayment)}
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  {formatCurrency(lastProjection?.byTermRemaining || 0)}
-                                </TableCell>
-                                <TableCell className="text-right text-red-600 font-medium">
-                                  {formatCurrency(lastProjection?.cumulativeDebt || 0)}
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
-
-              {/* Projection Table */}
+              {/* Net Cash Flow Chart */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Detailed Projection</CardTitle>
+                  <CardTitle>Net Cash Flow</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-[250px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={projectionData}>
+                        <CartesianGrid strokeDasharray="3 3" className="stroke-border/50" />
+                        <XAxis
+                          dataKey="periodLabel"
+                          tick={{ fontSize: 12 }}
+                          interval="preserveStartEnd"
+                        />
+                        <YAxis
+                          tick={{ fontSize: 12 }}
+                          tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
+                        />
+                        <Tooltip
+                          content={({ active, payload, label, coordinate }) => (
+                            <ProjectionTooltip
+                              active={active}
+                              payload={payload}
+                              label={label as string}
+                              projection={projectionData.find(p => p.periodLabel === label)}
+                              coordinate={coordinate}
+                            />
+                          )}
+                        />
+                        <Bar
+                          dataKey="netCashFlow"
+                          name="Net Cash Flow"
+                          fill="hsl(var(--chart-3))"
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Detailed Projection Table */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Cash Flow Details</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Period</TableHead>
-                        <TableHead className="text-right">Income Budget</TableHead>
-                        <TableHead className="text-right">Income Actual</TableHead>
-                        <TableHead className="text-right">Expense Budget</TableHead>
-                        <TableHead className="text-right">Expense Actual</TableHead>
-                        <TableHead className="text-right">Net Position</TableHead>
-                        <TableHead className="text-right">Liquid Funds</TableHead>
+                        <TableHead className="text-right">Projected Income</TableHead>
+                        <TableHead className="text-right">Projected Expenses</TableHead>
+                        <TableHead className="text-right">Net Cash Flow</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {projectionData.map((row, idx) => (
-                        <TableRow key={idx}>
+                      {projectionData.map((row) => (
+                        <TableRow key={row.periodKey}>
                           <TableCell className="font-medium">{row.periodLabel}</TableCell>
                           <TableCell className="text-right text-green-600">
-                            {formatCurrency(row.incomeBudget)}
-                          </TableCell>
-                          <TableCell className="text-right">
                             {formatCurrency(row.projectedIncome)}
                           </TableCell>
                           <TableCell className="text-right text-red-600">
-                            {formatCurrency(row.expenseBudget)}
-                          </TableCell>
-                          <TableCell className="text-right">
                             {formatCurrency(row.projectedExpenses)}
                           </TableCell>
-                          <TableCell className={`text-right font-medium ${row.netPosition >= 0 ? "text-green-600" : "text-red-600"}`}>
-                            {formatCurrency(row.netPosition)}
-                          </TableCell>
-                          <TableCell className="text-right font-medium">
-                            {formatCurrency(row.cumulativeLiquidFunds)}
+                          <TableCell className={`text-right font-medium ${row.netCashFlow >= 0 ? "text-green-600" : "text-red-600"}`}>
+                            {formatCurrency(row.netCashFlow)}
                           </TableCell>
                         </TableRow>
                       ))}

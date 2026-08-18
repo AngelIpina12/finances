@@ -3,6 +3,11 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --chart-1: 210 100% 50%;
+  --chart-2: 160 60% 45%;
+  --chart-3: 30 80% 55%;
+  --chart-4: 280 60% 55%;
+  --chart-5: 340 70% 55%;
 }
 
 @theme inline {
@@ -16,6 +21,11 @@
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --chart-1: 210 100% 60%;
+    --chart-2: 160 60% 55%;
+    --chart-3: 30 80% 60%;
+    --chart-4: 280 60% 65%;
+    --chart-5: 340 70% 65%;
   }
 }
 

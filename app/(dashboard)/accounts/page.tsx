@@ -102,6 +102,8 @@ function formatBillingCycleInfo(info: BillingCycleInfo): string {
   const netOwed = parseFloat(info.netOwed) || 0;
   const owedAmount = parseFloat(info.owedAmount) || 0;
   const byTermMonthly = parseFloat(info.byTermMonthlyPayment) || 0;
+  const previousCycleBalance = parseFloat(info.previousCycleBalance) || 0;
+  const isShowingPreviousCycle = info.isShowingPreviousCycle;
 
   const lines = [
     `📅 Ciclo: ${formatDate(info.cycleStart)} - ${formatDate(info.cycleEnd)}`,
@@ -126,8 +128,16 @@ function formatBillingCycleInfo(info: BillingCycleInfo): string {
     `💰 Total ocupado: ${formatCurrency(totalOccupied.toString(), info.currency)}`
   );
 
-  // Total to pay this month = regular charges + by_term monthly payment
-  const totalToPay = netOwed + byTermMonthly;
+  // When showing previous cycle balance (unpaid from last cycle)
+  if (isShowingPreviousCycle && previousCycleBalance > 0) {
+    lines.push(
+      ``,
+      `⚠️ Saldo pendiente del ciclo anterior: ${formatCurrency(previousCycleBalance.toString(), info.currency)}`
+    );
+  }
+
+  // Total to pay this month = regular charges + by_term monthly payment OR previous cycle balance if showing it
+  const totalToPay = isShowingPreviousCycle ? previousCycleBalance : netOwed + byTermMonthly;
   lines.push(
     `📊 Total a pagar este mes: ${formatCurrency(totalToPay.toFixed(2), info.currency)}`
   );
@@ -925,33 +935,42 @@ export default function AccountsPage() {
                             <span className="font-medium">{account.name}</span>
                           </div>
                         </TableCell>
-                        <TableCell className="text-right font-medium">
-                          {account.hideBalance === 1 ? (
-                            <span className="text-muted-foreground">—</span>
-                          ) : billingCycles[account.id] ? (
-                            <Popover>
-                              <PopoverTrigger asChild>
-                                <span className="cursor-help underline decoration-dotted">
-                                  {formatCurrency(
-                                    (parseFloat(billingCycles[account.id].netOwed) + parseFloat(billingCycles[account.id].byTermMonthlyPayment)).toString(),
-                                    account.currency
-                                  )}
-                                </span>
-                              </PopoverTrigger>
-                              <PopoverContent className="w-80 whitespace-pre-line text-sm">
-                                <div className="space-y-2">
-                                  <div className="font-semibold border-b pb-2">
-                                    {account.name}
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            {billingCycles[account.id] && (parseFloat(billingCycles[account.id].netOwed) > 0 || parseFloat(billingCycles[account.id].owedAmount) > 0 || parseFloat(billingCycles[account.id].byTermMonthlyPayment) > 0) && (
+                              <Badge variant="destructive" className="text-xs font-medium">
+                                ADEUDO
+                              </Badge>
+                            )}
+                            {account.hideBalance === 1 ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : billingCycles[account.id] ? (
+                              <Popover>
+                                <PopoverTrigger asChild>
+                                  <span className="cursor-help underline decoration-dotted font-medium">
+                                    {formatCurrency(
+                                      billingCycles[account.id].isShowingPreviousCycle
+                                        ? billingCycles[account.id].previousCycleBalance
+                                        : (parseFloat(billingCycles[account.id].netOwed) + parseFloat(billingCycles[account.id].byTermMonthlyPayment)).toString(),
+                                      account.currency
+                                    )}
+                                  </span>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-80 whitespace-pre-line text-sm">
+                                  <div className="space-y-2">
+                                    <div className="font-semibold border-b pb-2">
+                                      {account.name}
+                                    </div>
+                                    <div className="text-muted-foreground">
+                                      {formatBillingCycleInfo(billingCycles[account.id])}
+                                    </div>
                                   </div>
-                                  <div className="text-muted-foreground">
-                                    {formatBillingCycleInfo(billingCycles[account.id])}
-                                  </div>
-                                </div>
-                              </PopoverContent>
-                            </Popover>
-                          ) : (
-                            formatCurrency(account.balance, account.currency)
-                          )}
+                                </PopoverContent>
+                              </Popover>
+                            ) : (
+                              <span className="font-medium">{formatCurrency(account.balance, account.currency)}</span>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-1">

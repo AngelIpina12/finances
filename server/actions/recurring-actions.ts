@@ -41,6 +41,8 @@ interface TypeSpecificData {
   billingConfig?: CycleConfig;
   paymentDay?: number;
   endDate?: Date;
+  // Direction for indefinite transactions
+  transactionType?: 'income' | 'expense';
   // Payroll income specific
   isPayroll?: boolean;
   payrollConfig?: {
@@ -925,8 +927,24 @@ export async function processRecurringPayments(): Promise<{ processed: number; r
         // Calculate next payment date
         const nextDate = await getNextPaymentDateForOccurrence(payment);
         updateData.nextPaymentDate = nextDate;
+      } else if (payment.paymentType === "subscription" && typeSpecific.accountId && payment.nextPaymentDate) {
+        // Create an expense transaction for subscriptions
+        const { transactions } = await import("@/lib/db/schema");
+        await drizzleDb.insert(transactions).values({
+          userId: payment.userId,
+          accountId: typeSpecific.accountId,
+          type: "expense",
+          categoryId: typeSpecific.categoryId || null,
+          amount: typeSpecific.price || "0",
+          description: payment.name,
+          recurringPaymentId: payment.id,
+          date: payment.nextPaymentDate,
+        });
+
+        const nextDate = await getNextPaymentDateForOccurrence(payment);
+        updateData.nextPaymentDate = nextDate;
       } else {
-        // For non-by_term payments, just update next payment date
+        // For other non-by_term payments, just update next payment date
         const nextDate = await getNextPaymentDateForOccurrence(payment);
         updateData.nextPaymentDate = nextDate;
       }
@@ -1016,4 +1034,434 @@ export async function fixNextPaymentDates(): Promise<{ corrected: number }> {
   }
 
   return { corrected };
+}
+
+// ============================================================
+// PROJECTIONS - Cash Flow based on recurring payments
+// ============================================================
+
+export interface CashFlowProjection {
+  periodLabel: string;       // e.g., "Aug 2026"
+  periodKey: string;         // e.g., "2026-08"
+  projectedIncome: number;
+  projectedExpenses: number;
+  netCashFlow: number;
+  incomeDetails: Array<{ name: string; amount: number; date: string }>;
+  expenseDetails: Array<{ name: string; amount: number; date: string }>;
+  // Enriched breakdowns
+  incomeBreakdown: IncomeBreakdown[];
+  expenseBreakdown: ExpenseBreakdown[];
+}
+
+export interface IncomeBreakdown {
+  type: 'payroll' | 'other';
+  label: string;
+  items: Array<{
+    name: string;
+    accountName?: string;
+    amount: number;
+    date: string;
+  }>;
+  total: number;
+}
+
+export interface ExpenseBreakdown {
+  creditAccountId: string;
+  creditAccountName: string;
+  billingDate: number; // day of month (corte)
+  items: Array<{
+    name: string;
+    amount: number;
+    date: string;
+    paymentNumber?: number;
+    totalPayments?: number;
+  }>;
+  total: number;
+}
+
+export interface OtherExpenseItem {
+  name: string;
+  amount: number;
+  date: string;
+}
+
+/**
+ * Project cash flow for a date range based on recurring payments.
+ *
+ * - by_term: Only counts payments within firstBillDate + totalPayments range
+ * - subscription: Projects every period while active
+ * - indefinite: Projects based on cycleConfig and endDate
+ */
+export async function projectRecurringCashFlow(
+  monthsAhead: number = 6,
+  startDate?: Date,
+  endDate?: Date
+): Promise<CashFlowProjection[]> {
+  const session = await auth();
+  if (!session?.user?.id) throw new Error("Unauthorized");
+
+  const now = new Date();
+  const projections: CashFlowProjection[] = [];
+
+  // Determine the range to project
+  const rangeStart = startDate ? startOfMonth(startDate) : startOfMonth(now);
+  const rangeEnd = endDate ? startOfMonth(endDate) : addMonths(startOfMonth(now), monthsAhead);
+
+  // Get all active recurring payments
+  const payments = await drizzleDb
+    .select()
+    .from(recurringPayments)
+    .where(
+      and(
+        eq(recurringPayments.userId, session.user.id),
+        eq(recurringPayments.isActive, 1)
+      )
+    );
+
+  // Fetch all accounts once for name/billing date lookups
+  const allAccounts = await drizzleDb
+    .select({
+      id: accounts.id,
+      name: accounts.name,
+      billingDate: accounts.billingDate,
+      type: accounts.type,
+    })
+    .from(accounts)
+    .where(eq(accounts.userId, session.user.id));
+
+  const accountMap = new Map(
+    allAccounts.map(a => [a.id, { name: a.name, billingDate: a.billingDate, type: a.type }])
+  );
+
+  // Generate projections for each month in the range
+  let current = new Date(rangeStart);
+  while (current <= rangeEnd) {
+    const targetMonth = startOfMonth(current);
+    const year = targetMonth.getFullYear();
+    const month = targetMonth.getMonth(); // 0-indexed
+    const periodKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+    const periodLabel = targetMonth.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+
+    let projectedIncome = 0;
+    let projectedExpenses = 0;
+    const incomeDetails: CashFlowProjection['incomeDetails'] = [];
+    const expenseDetails: CashFlowProjection['expenseDetails'] = [];
+
+    // Breakdown tracking
+    const payrollItems: IncomeBreakdown['items'] = [];
+    const otherIncomeItems: IncomeBreakdown['items'] = [];
+    const creditCardExpenses: ExpenseBreakdown[] = [];
+    const otherExpenseItems: OtherExpenseItem[] = [];
+
+    for (const payment of payments) {
+      const typeSpecific = payment.typeSpecific as TypeSpecificData;
+
+      if (payment.paymentType === 'by_term') {
+        // by_term: Only include if payment falls within firstBillDate + totalPayments
+        const firstBillDate = typeSpecific.firstBillDate ? new Date(typeSpecific.firstBillDate) : null;
+        const totalPayments = typeSpecific.totalPayments || 0;
+
+        if (!firstBillDate || totalPayments <= 0) continue;
+
+        // Calculate which payment number this would be (0-indexed)
+        // Payment 0 = firstBillDate, Payment 1 = firstBillDate + 1 month, etc.
+        const paymentNumber = getMonthDifference(firstBillDate, targetMonth);
+
+        if (paymentNumber < 0 || paymentNumber >= totalPayments) {
+          continue; // Outside the payment term range
+        }
+
+        // Monthly payment amount
+        const totalAmount = parseFloat(typeSpecific.totalAmount || '0');
+        const monthlyAmount = totalAmount / totalPayments;
+        const paymentDate = addMonths(firstBillDate, paymentNumber);
+
+        // Only count if same month
+        if (paymentDate.getMonth() === month && paymentDate.getFullYear() === year) {
+          projectedExpenses += monthlyAmount;
+          expenseDetails.push({
+            name: payment.name,
+            amount: monthlyAmount,
+            date: paymentDate.toISOString().split('T')[0],
+          });
+
+          // Add to credit card breakdown
+          const creditAccountId = typeSpecific.creditAccountId || '';
+          const creditAccount = creditAccountId ? accountMap.get(creditAccountId) : null;
+          const billingDate = firstBillDate.getDate();
+
+          creditCardExpenses.push({
+            creditAccountId: creditAccountId || 'unknown',
+            creditAccountName: creditAccount?.name || 'Unknown Card',
+            billingDate,
+            items: [{
+              name: payment.name,
+              amount: monthlyAmount,
+              date: paymentDate.toISOString().split('T')[0],
+              paymentNumber: paymentNumber + 1,
+              totalPayments,
+            }],
+            total: monthlyAmount,
+          });
+        }
+
+      } else if (payment.paymentType === 'subscription') {
+        // subscription: Projects every period based on paymentDay, but only if the subscription has started
+        const price = parseFloat(typeSpecific.price || '0');
+        const paymentDay = typeSpecific.paymentDay || 1;
+
+        // Skip if next_payment_date is in the future relative to the target month
+        if (payment.nextPaymentDate) {
+          const nextPd = new Date(payment.nextPaymentDate);
+          const nextPdMonth = startOfMonth(nextPd);
+          if (nextPdMonth > targetMonth) {
+            continue; // Subscription hasn't started yet for this target month
+          }
+        }
+
+        // Create a date for this month on the payment day
+        const paymentDate = new Date(year, month, Math.min(paymentDay, getDaysInMonth(targetMonth)));
+
+        if (paymentDay > 0) {
+          projectedExpenses += price;
+          expenseDetails.push({
+            name: payment.name,
+            amount: price,
+            date: paymentDate.toISOString().split('T')[0],
+          });
+
+          // Add to credit card breakdown
+          const creditAccountId = typeSpecific.accountId || '';
+          const creditAccount = creditAccountId ? accountMap.get(creditAccountId) : null;
+          const billingDate = typeSpecific.paymentDay || 1;
+
+          creditCardExpenses.push({
+            creditAccountId: creditAccountId || 'unknown',
+            creditAccountName: creditAccount?.name || 'Unknown Card',
+            billingDate,
+            items: [{
+              name: payment.name,
+              amount: price,
+              date: paymentDate.toISOString().split('T')[0],
+            }],
+            total: price,
+          });
+        }
+
+      } else if (payment.paymentType === 'indefinite') {
+        // indefinite: Check if there's a payment this month based on cycleConfig
+        const paymentOccurrences = getIndefinitePaymentOccurrences(payment, targetMonth, now);
+
+        for (const occurrence of paymentOccurrences) {
+          // Determine direction: isPayroll = income, transactionType = income/expense
+          let amount = 0;
+          let direction: 'income' | 'expense' = 'expense';
+
+          if (typeSpecific.isPayroll) {
+            // Payroll: use payrollConfig amounts
+            direction = 'income';
+            const payrollConfig = typeSpecific.payrollConfig;
+            if (payrollConfig) {
+              // Check if 5th week adjustment applies
+              const occurrenceDate = new Date(occurrence.date);
+              if (payrollConfig.hasFifthWeekAdjustment && isFifthWeekOfMonth(occurrenceDate, payrollConfig.dayOfWeek)) {
+                amount = parseFloat(payrollConfig.fifthWeekAmount || '0');
+              } else {
+                amount = parseFloat(payrollConfig.regularAmount || '0');
+              }
+            }
+          } else {
+            amount = parseFloat(typeSpecific.amount || '0');
+            direction = typeSpecific.transactionType === 'income' ? 'income' : 'expense';
+          }
+
+          if (amount > 0) {
+            const accountId = typeSpecific.accountId || '';
+            const account = accountId ? accountMap.get(accountId) : null;
+
+            if (direction === 'income') {
+              projectedIncome += amount;
+              incomeDetails.push({ name: payment.name, amount, date: occurrence.date });
+
+              // Add to income breakdown
+              if (typeSpecific.isPayroll) {
+                payrollItems.push({
+                  name: payment.name,
+                  accountName: account?.name,
+                  amount,
+                  date: occurrence.date,
+                });
+              } else {
+                otherIncomeItems.push({
+                  name: payment.name,
+                  accountName: account?.name,
+                  amount,
+                  date: occurrence.date,
+                });
+              }
+            } else {
+              projectedExpenses += amount;
+              expenseDetails.push({ name: payment.name, amount, date: occurrence.date });
+
+              // Add to other expenses (non-credit card)
+              otherExpenseItems.push({
+                name: payment.name,
+                amount,
+                date: occurrence.date,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Aggregate breakdowns
+    const aggregatedExpenses = aggregateExpensesByCreditCard(creditCardExpenses);
+    const incomeBreakdown: IncomeBreakdown[] = [];
+
+    if (payrollItems.length > 0) {
+      incomeBreakdown.push({
+        type: 'payroll',
+        label: 'Payroll',
+        items: payrollItems,
+        total: payrollItems.reduce((sum, item) => sum + item.amount, 0),
+      });
+    }
+    if (otherIncomeItems.length > 0) {
+      incomeBreakdown.push({
+        type: 'other',
+        label: 'Other Income',
+        items: otherIncomeItems,
+        total: otherIncomeItems.reduce((sum, item) => sum + item.amount, 0),
+      });
+    }
+
+    projections.push({
+      periodLabel,
+      periodKey,
+      projectedIncome,
+      projectedExpenses,
+      netCashFlow: projectedIncome - projectedExpenses,
+      incomeDetails,
+      expenseDetails,
+      incomeBreakdown,
+      expenseBreakdown: aggregatedExpenses,
+    });
+
+    current = addMonths(current, 1);
+  }
+
+  return projections;
+}
+
+/**
+ * Get all occurrences of an indefinite payment in a given month
+ */
+function getIndefinitePaymentOccurrences(
+  payment: RecurringPayment,
+  targetMonth: Date,
+  now: Date
+): Array<{ date: string }> {
+  const config = payment.cycleConfig as CycleConfig;
+  const occurrences: Array<{ date: string }> = [];
+
+  // Check endDate - if past targetMonth, skip
+  if (payment.endDate) {
+    const endDate = new Date(payment.endDate);
+    if (endDate < targetMonth) return []; // Payment has ended
+  }
+
+  const year = targetMonth.getFullYear();
+  const month = targetMonth.getMonth();
+  const monthStr = `${year}-${String(month + 1).padStart(2, '0')}`;
+
+  // Check perMonthDays first - explicit dates per month
+  if (config.perMonthDays && Object.keys(config.perMonthDays).length > 0) {
+    const dayOfMonth = config.perMonthDays[monthStr];
+    if (dayOfMonth) {
+      const date = new Date(year, month, dayOfMonth);
+      const dateStr = date.toISOString().split('T')[0];
+      // Make sure date is not in the past
+      if (date >= now || isSameMonth(date, now)) {
+        occurrences.push({ date: dateStr });
+      }
+    }
+    return occurrences;
+  }
+
+  // Check daysOfMonth (fixed day each month)
+  if (config.daysOfMonth && config.daysOfMonth.length > 0) {
+    for (const day of config.daysOfMonth) {
+      const date = new Date(year, month, day);
+      if (date >= now || isSameMonth(date, now)) {
+        occurrences.push({ date: date.toISOString().split('T')[0] });
+      }
+    }
+    return occurrences;
+  }
+
+  // Check daysOfWeek (weekly payments)
+  if (config.daysOfWeek && config.daysOfWeek.length > 0 && config.type === 'weekly') {
+    const interval = config.interval || 1;
+    // Find all occurrences of the day(s) of week in the target month
+    const firstDayOfMonth = new Date(year, month, 1);
+    const lastDayOfMonth = new Date(year, month + 1, 0);
+
+    for (let d = new Date(firstDayOfMonth); d <= lastDayOfMonth; d.setDate(d.getDate() + 1)) {
+      if (config.daysOfWeek.includes(d.getDay())) {
+        if (d >= now || isSameMonth(d, now)) {
+          occurrences.push({ date: d.toISOString().split('T')[0] });
+        }
+      }
+    }
+    // Filter to interval weeks
+    if (interval > 1 && occurrences.length > 0) {
+      const filtered = occurrences.filter((_, idx) => idx % interval === 0);
+      return filtered;
+    }
+    return occurrences;
+  }
+
+  return occurrences;
+}
+
+/**
+ * Get month difference between two dates (0-indexed)
+ */
+function getMonthDifference(startDate: Date, endDate: Date): number {
+  return (endDate.getFullYear() - startDate.getFullYear()) * 12 +
+         (endDate.getMonth() - startDate.getMonth());
+}
+
+/**
+ * Check if two dates are in the same month
+ */
+function isSameMonth(date1: Date, date2: Date): boolean {
+  return date1.getFullYear() === date2.getFullYear() &&
+         date1.getMonth() === date2.getMonth();
+}
+
+/**
+ * Aggregate expense items by credit card account
+ */
+function aggregateExpensesByCreditCard(expenses: ExpenseBreakdown[]): ExpenseBreakdown[] {
+  const map = new Map<string, ExpenseBreakdown>();
+
+  for (const expense of expenses) {
+    const key = expense.creditAccountId;
+    if (!map.has(key)) {
+      map.set(key, {
+        creditAccountId: expense.creditAccountId,
+        creditAccountName: expense.creditAccountName,
+        billingDate: expense.billingDate,
+        items: [],
+        total: 0,
+      });
+    }
+    const existing = map.get(key)!;
+    existing.items.push(...expense.items);
+    existing.total += expense.total;
+  }
+
+  return Array.from(map.values());
 }

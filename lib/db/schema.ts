@@ -13,8 +13,8 @@ export const users = pgTable('users', {
   email: varchar('email', { length: 255 }).notNull().unique(),
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
   name: varchar('name', { length: 255 }),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Categories Table
@@ -26,8 +26,8 @@ export const categories = pgTable('categories', {
   iconUrl: varchar('icon_url', { length: 500 }),
   color: varchar('color', { length: 7 }),
   parentId: uuid('parent_id'), // Self-reference handled in queries, not via Drizzle constraint
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Tags Table
@@ -36,7 +36,7 @@ export const tags = pgTable('tags', {
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 255 }).notNull(),
   categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'cascade' }),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Accounts Table
@@ -62,9 +62,9 @@ export const accounts = pgTable('accounts', {
   paymentReminder: integer('payment_reminder').notNull().default(0),
   // Legacy
   isActive: integer('is_active').notNull().default(1),
-  deletedAt: timestamp('deleted_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Transactions Table
@@ -72,14 +72,15 @@ export const transactions = pgTable('transactions', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   accountId: uuid('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  transferAccountId: uuid('transfer_account_id').references(() => accounts.id, { onDelete: 'set null' }),
   categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null' }),
   type: transactionTypeEnum('type').notNull(),
   amount: decimal('amount', { precision: 15, scale: 2 }).notNull(),
   description: text('description'),
   tagIds: text('tag_ids'), // Comma-separated UUIDs for simplicity
   recurringPaymentId: uuid('recurring_payment_id').references(() => recurringPayments.id, { onDelete: 'cascade' }),
-  date: timestamp('date').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  date: timestamp('date', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Budgets Table
@@ -95,12 +96,12 @@ export const budgets = pgTable('budgets', {
   rolloverType: varchar('rollover_type', { length: 50 }).notNull().default('disabled'),
   categoryId: uuid('category_id').references(() => categories.id, { onDelete: 'set null' }),
   category: varchar('category', { length: 255 }),
-  startDate: timestamp('start_date').notNull(),
-  endDate: timestamp('end_date'),
+  startDate: timestamp('start_date', { withTimezone: true }).notNull(),
+  endDate: timestamp('end_date', { withTimezone: true }),
   // Credit card tracking
   hasCreditCardTracking: integer('has_credit_card_tracking').notNull().default(0),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Budget Credit Cards Table (links a budget to specific credit card accounts)
@@ -108,8 +109,8 @@ export const budgetCreditCards = pgTable('budget_credit_cards', {
   id: uuid('id').defaultRandom().primaryKey(),
   budgetId: uuid('budget_id').notNull().references(() => budgets.id, { onDelete: 'cascade' }),
   creditAccountId: uuid('credit_account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Budget Category Credit Allocations Table (pre-planned category spending on specific CCs)
@@ -118,8 +119,8 @@ export const budgetCategoryCreditAllocations = pgTable('budget_category_credit_a
   budgetCreditCardId: uuid('budget_credit_card_id').notNull().references(() => budgetCreditCards.id, { onDelete: 'cascade' }),
   categoryId: uuid('category_id').notNull().references(() => categories.id, { onDelete: 'cascade' }),
   monthlyAmount: decimal('monthly_amount', { precision: 15, scale: 2 }).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Budget Allocations Table (per-category amounts for category-level budgets)
@@ -128,20 +129,20 @@ export const budgetAllocations = pgTable('budget_allocations', {
   budgetId: uuid('budget_id').notNull().references(() => budgets.id, { onDelete: 'cascade' }),
   categoryId: uuid('category_id').notNull().references(() => categories.id, { onDelete: 'cascade' }),
   amount: decimal('amount', { precision: 15, scale: 2 }).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Budget Periods Table (tracks each period instance with rollover)
 export const budgetPeriods = pgTable('budget_periods', {
   id: uuid('id').defaultRandom().primaryKey(),
   budgetId: uuid('budget_id').notNull().references(() => budgets.id, { onDelete: 'cascade' }),
-  periodStart: timestamp('period_start').notNull(),
-  periodEnd: timestamp('period_end').notNull(),
+  periodStart: timestamp('period_start', { withTimezone: true }).notNull(),
+  periodEnd: timestamp('period_end', { withTimezone: true }).notNull(),
   allocatedAmount: decimal('allocated_amount', { precision: 15, scale: 2 }).notNull(),
   rolloverAmount: decimal('rollover_amount', { precision: 15, scale: 2 }).default('0'),
   totalAvailable: decimal('total_available', { precision: 15, scale: 2 }).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Recurring Payments Table
@@ -159,9 +160,9 @@ export const recurringPayments = pgTable('recurring_payments', {
   cycleConfig: jsonb('cycle_config'),
 
   // Dates
-  startDate: timestamp('start_date'),
-  endDate: timestamp('end_date'),
-  nextPaymentDate: timestamp('next_payment_date'),
+  startDate: timestamp('start_date', { withTimezone: true }),
+  endDate: timestamp('end_date', { withTimezone: true }),
+  nextPaymentDate: timestamp('next_payment_date', { withTimezone: true }),
 
   // Type-specific (JSON)
   typeSpecific: jsonb('type_specific'),
@@ -173,8 +174,8 @@ export const recurringPayments = pgTable('recurring_payments', {
   // Status
   isActive: integer('is_active').notNull().default(1),
 
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Investments Table
@@ -188,9 +189,9 @@ export const investments = pgTable('investments', {
   quantity: decimal('quantity', { precision: 15, scale: 8 }),
   purchasePrice: decimal('purchase_price', { precision: 15, scale: 2 }),
   currentPrice: decimal('current_price', { precision: 15, scale: 2 }),
-  purchaseDate: timestamp('purchase_date'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  purchaseDate: timestamp('purchase_date', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Fixed Income Accounts Table
@@ -215,23 +216,23 @@ export const fixedIncomeAccounts = pgTable('fixed_income_accounts', {
   compoundFirstTier: integer('compound_first_tier').notNull().default(1),
   // Accumulated
   accumulatedInterest: decimal('accumulated_interest', { precision: 15, scale: 2 }).notNull().default('0'),
-  lastAccrualDate: timestamp('last_accrual_date'),
+  lastAccrualDate: timestamp('last_accrual_date', { withTimezone: true }),
   // Status
   isActive: integer('is_active').notNull().default(1),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Fixed Income Accruals Table (daily history)
 export const fixedIncomeAccruals = pgTable('fixed_income_accruals', {
   id: uuid('id').defaultRandom().primaryKey(),
   accountId: uuid('account_id').notNull().references(() => fixedIncomeAccounts.id, { onDelete: 'cascade' }),
-  date: timestamp('date').notNull(),
+  date: timestamp('date', { withTimezone: true }).notNull(),
   balanceAtStart: decimal('balance_at_start', { precision: 15, scale: 2 }).notNull(),
   interestEarned: decimal('interest_earned', { precision: 15, scale: 4 }).notNull(),
   balanceAtEnd: decimal('balance_at_end', { precision: 15, scale: 2 }).notNull(),
   effectiveRate: decimal('effective_rate', { precision: 5, scale: 2 }).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Loans Table
@@ -244,11 +245,11 @@ export const loans = pgTable('loans', {
   interestRate: decimal('interest_rate', { precision: 5, scale: 2 }).notNull(),
   remainingBalance: decimal('remaining_balance', { precision: 15, scale: 2 }).notNull(),
   monthlyPayment: decimal('monthly_payment', { precision: 15, scale: 2 }).notNull(),
-  startDate: timestamp('start_date').notNull(),
-  endDate: timestamp('end_date'),
+  startDate: timestamp('start_date', { withTimezone: true }).notNull(),
+  endDate: timestamp('end_date', { withTimezone: true }),
   isActive: integer('is_active').notNull().default(1),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // Type exports

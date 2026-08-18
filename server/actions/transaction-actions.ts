@@ -86,7 +86,7 @@ export async function createTransaction(data: {
     newSourceBalance = new Decimal(sourceAccount[0].balance).minus(amountDecimal);
   }
 
-  // For transfers, verify destination account and update its balance
+  // For transfers, verify destination account and update its balance/owedAmount
   if (type === "transfer" && transferAccountId) {
     const destAccount = await drizzleDb
       .select()
@@ -96,13 +96,23 @@ export async function createTransaction(data: {
 
     if (!destAccount[0]) throw new Error("Destination account not found");
 
-    const newDestBalance = new Decimal(destAccount[0].balance).plus(amountDecimal);
+    // If destination is a credit card, reduce owedAmount (payment); otherwise increase balance
+    if (destAccount[0].type === 'credit') {
+      const currentOwed = new Decimal(destAccount[0].owedAmount || '0');
+      const newOwedAmount = currentOwed.minus(amountDecimal);
 
-    // Update destination account balance
-    await drizzleDb
-      .update(accounts)
-      .set({ balance: newDestBalance.toString(), updatedAt: new Date() })
-      .where(eq(accounts.id, transferAccountId));
+      await drizzleDb
+        .update(accounts)
+        .set({ owedAmount: newOwedAmount.toString(), updatedAt: new Date() })
+        .where(eq(accounts.id, transferAccountId));
+    } else {
+      const newDestBalance = new Decimal(destAccount[0].balance).plus(amountDecimal);
+
+      await drizzleDb
+        .update(accounts)
+        .set({ balance: newDestBalance.toString(), updatedAt: new Date() })
+        .where(eq(accounts.id, transferAccountId));
+    }
   }
 
   // Update source account balance
@@ -121,6 +131,7 @@ export async function createTransaction(data: {
       userId: session.user.id,
       accountId,
       type,
+      transferAccountId: transferAccountId || null,
       categoryId: categoryId || null,
       amount,
       description,
@@ -147,31 +158,62 @@ export async function deleteTransaction(id: string): Promise<void> {
 
   if (!transaction[0]) throw new Error("Transaction not found");
 
-  // Reverse the balance change
-  const account = await drizzleDb
+  const txn = transaction[0];
+  const amountDecimal = new Decimal(txn.amount);
+
+  // Reverse source account balance change
+  const sourceAccount = await drizzleDb
     .select()
     .from(accounts)
-    .where(and(eq(accounts.id, transaction[0].accountId), eq(accounts.userId, session.user.id)))
+    .where(and(eq(accounts.id, txn.accountId), eq(accounts.userId, session.user.id)))
     .limit(1);
 
-  if (account[0]) {
-    const amountDecimal = new Decimal(transaction[0].amount);
-    let newBalance: Decimal;
+  if (sourceAccount[0]) {
+    let newSourceBalance: Decimal;
 
-    if (transaction[0].type === "income") {
-      newBalance = new Decimal(account[0].balance).minus(amountDecimal);
-    } else if (transaction[0].type === "expense") {
-      newBalance = new Decimal(account[0].balance).plus(amountDecimal);
+    if (txn.type === "income") {
+      newSourceBalance = new Decimal(sourceAccount[0].balance).minus(amountDecimal);
+    } else if (txn.type === "expense") {
+      newSourceBalance = new Decimal(sourceAccount[0].balance).plus(amountDecimal);
     } else {
-      // For transfers, we'd need to find and reverse the paired transaction
-      // This is simplified - in production you'd track transfer pairs
-      newBalance = new Decimal(account[0].balance).plus(amountDecimal);
+      // Transfer: restore source account (was debited)
+      newSourceBalance = new Decimal(sourceAccount[0].balance).plus(amountDecimal);
     }
 
     await drizzleDb
       .update(accounts)
-      .set({ balance: newBalance.toString(), updatedAt: new Date() })
-      .where(eq(accounts.id, transaction[0].accountId));
+      .set({ balance: newSourceBalance.toString(), updatedAt: new Date() })
+      .where(eq(accounts.id, txn.accountId));
+  }
+
+  // Reverse transfer destination account
+  if (txn.type === "transfer" && txn.transferAccountId) {
+    const destAccount = await drizzleDb
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.id, txn.transferAccountId), eq(accounts.userId, session.user.id)))
+      .limit(1);
+
+    if (destAccount[0]) {
+      if (destAccount[0].type === 'credit') {
+        // Restore owedAmount (was decreased when transfer was made)
+        const currentOwed = new Decimal(destAccount[0].owedAmount || '0');
+        const newOwedAmount = currentOwed.plus(amountDecimal);
+
+        await drizzleDb
+          .update(accounts)
+          .set({ owedAmount: newOwedAmount.toString(), updatedAt: new Date() })
+          .where(eq(accounts.id, txn.transferAccountId));
+      } else {
+        // Restore destination balance (was credited)
+        const newDestBalance = new Decimal(destAccount[0].balance).minus(amountDecimal);
+
+        await drizzleDb
+          .update(accounts)
+          .set({ balance: newDestBalance.toString(), updatedAt: new Date() })
+          .where(eq(accounts.id, txn.transferAccountId));
+      }
+    }
   }
 
   await drizzleDb.delete(transactions).where(eq(transactions.id, id));
