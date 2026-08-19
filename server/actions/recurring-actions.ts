@@ -2,7 +2,7 @@
 
 import { auth } from "@/lib/auth";
 import { drizzleDb, recurringPayments, accounts, fixedIncomeAccounts, type RecurringPayment } from "@/lib/db";
-import { eq, and, lte } from "drizzle-orm";
+import { eq, and, lte, gt } from "drizzle-orm";
 import { recurringPaymentSchema } from "@/types/forms";
 import { revalidatePath } from "next/cache";
 import { addDays, addWeeks, addMonths, addYears, isBefore, setHours, setMinutes, setDate, getDay, getMonth, startOfMonth, getWeekOfMonth } from "date-fns";
@@ -791,6 +791,16 @@ export async function getNextPaymentDateForOccurrence(payment: RecurringPayment)
       nextDate = setMinutes(nextDate, minutes);
     }
 
+    // Check if we've exceeded the total number of payments
+    const totalPayments = typeSpecific.totalPayments || 0;
+    if (totalPayments > 0) {
+      const paymentNumber = getMonthDifference(firstBillDate, nextDate);
+      if (paymentNumber >= totalPayments) {
+        // Cycle is complete - no more payments
+        return new Date(0); // Returns epoch (1970) to signal "no more payments"
+      }
+    }
+
     return nextDate;
   }
 
@@ -814,7 +824,9 @@ export async function processRecurringPayments(): Promise<{ processed: number; r
     .where(
       and(
         eq(recurringPayments.isActive, 1),
-        lte(recurringPayments.nextPaymentDate, now)
+        lte(recurringPayments.nextPaymentDate, now),
+        // Exclude payments with epoch (1970) as nextPaymentDate - these have completed their cycle
+        gt(recurringPayments.nextPaymentDate, new Date("2000-01-01"))
       )
     );
 
@@ -866,6 +878,11 @@ export async function processRecurringPayments(): Promise<{ processed: number; r
         // Calculate next payment date
         const nextDate = await getNextPaymentDateForOccurrence(payment);
         updateData.nextPaymentDate = nextDate;
+
+        // If nextDate is epoch (1970), the payment cycle is complete - deactivate
+        if (nextDate.getTime() === 0) {
+          updateData.isActive = 0;
+        }
       } else if (typeSpecific.isPayroll && payment.nextPaymentDate) {
         // For payroll payments, create an income transaction with the appropriate amount
         const payrollConfig = typeSpecific.payrollConfig;

@@ -29,8 +29,6 @@ export interface BillingCycleInfo {
   futureCharges: FutureCharge[];
   currency: string;
   accountName: string;
-  previousCycleBalance: string; // Unpaid balance from previous cycle
-  isShowingPreviousCycle: boolean; // True when showing previous cycle balance due
 }
 
 /**
@@ -158,48 +156,6 @@ export async function getCreditCardBillingCycleInfo(
   // Net owed = regular charges - payments (MSI handled separately)
   const netOwed = totalCharges.minus(totalPayments);
 
-  // Calculate the PREVIOUS cycle's balance (what's due on the upcoming due date)
-  // This is needed when the current cycle just started and has $0 netOwed
-  // but there's unpaid balance from previous cycles
-  // Mexico City uses CDT (UTC-5) during summer months
-  // Transactions entered as midnight local are stored as 5am UTC next day
-  // Current cycleStart = Aug 16 05:00 UTC (local midnight in Mexico with UTC-5)
-  // Previous cycle: Jul 16 05:00 UTC to Aug 16 04:59:59 UTC
-  const MexicoOffsetMs = 5 * 60 * 60 * 1000; // 5 hours in ms
-  const previousCycleEnd = new Date(cycleStart.getTime() - 1);
-  const previousCycleStart = new Date(previousCycleEnd.getFullYear(), previousCycleEnd.getMonth(), 16, 5, 0, 0, 0);
-
-  const previousCycleTransactions = await drizzleDb
-    .select()
-    .from(transactions)
-    .where(
-      and(
-        eq(transactions.accountId, accountId),
-        eq(transactions.userId, session.user.id),
-        gte(transactions.date, previousCycleStart),
-        lte(transactions.date, previousCycleEnd)
-      )
-    );
-
-  // Calculate previous cycle balance
-  let previousTotalCharges = new Decimal(0);
-  let previousTotalPayments = new Decimal(0);
-
-  for (const tx of previousCycleTransactions) {
-    const amount = new Decimal(tx.amount);
-    if (tx.type === "expense" && !tx.recurringPaymentId) {
-      previousTotalCharges = previousTotalCharges.plus(amount);
-    } else if (tx.type === "expense" && tx.recurringPaymentId) {
-      if (!byTermPaymentIds.has(tx.recurringPaymentId)) {
-        previousTotalCharges = previousTotalCharges.plus(amount);
-      }
-    } else if (tx.type === "income") {
-      previousTotalPayments = previousTotalPayments.plus(amount);
-    }
-  }
-
-  const previousCycleNetOwed = previousTotalCharges.minus(previousTotalPayments);
-
   // Calculate owedAmount from by_term payments for THIS credit card account
   // (sum of remaining balances across all by_term plans)
   let owedAmountDecimal = new Decimal(0);
@@ -249,12 +205,6 @@ export async function getCreditCardBillingCycleInfo(
       byTermMonthlyPayment = byTermMonthlyPayment.plus(monthlyAmount);
     }
   }
-
-  // Determine if we should show previous cycle balance
-  // Show it when: current cycle netOwed is small (< $100) but there's significant previous cycle debt
-  // or when byTermMonthlyPayment > 0 (MSI payments are still active)
-  const showPreviousCycle = (netOwed.lessThan(100) && previousCycleNetOwed.greaterThan(100)) || byTermMonthlyPayment.greaterThan(0);
-  const previousCycleBalance = showPreviousCycle ? previousCycleNetOwed.plus(byTermMonthlyPayment).toString() : "0";
 
   // Fallback: if no transactions were found and no by_term payments,
   // use the account's owed_amount as reference (for manually entered balances)
@@ -317,8 +267,6 @@ export async function getCreditCardBillingCycleInfo(
     futureCharges,
     currency: creditCard.currency,
     accountName: creditCard.name,
-    previousCycleBalance,
-    isShowingPreviousCycle: showPreviousCycle,
   };
 }
 

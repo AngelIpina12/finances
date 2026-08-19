@@ -2160,7 +2160,8 @@ export default function RecurringPage() {
             <TableBody>
               {filteredPayments.map((payment) => {
                 const nextDate = payment.nextPaymentDate ? new Date(payment.nextPaymentDate) : null;
-                const isPast = nextDate && nextDate < new Date();
+                const isCompleted = nextDate && nextDate.getTime() === 0;
+                const isPast = nextDate && !isCompleted && nextDate < new Date();
 
                 return (
                   <TableRow key={payment.id}>
@@ -2177,7 +2178,9 @@ export default function RecurringPage() {
                     </TableCell>
                     <TableCell className="text-right">{getAmountDisplay(payment)}</TableCell>
                     <TableCell>
-                      {nextDate && (
+                      {isCompleted ? (
+                        <span className="text-xs text-green-600">Completed</span>
+                      ) : nextDate ? (
                         <div className="flex flex-col">
                           <span>{format(nextDate, "MMM d, yyyy")}</span>
                           <span
@@ -2186,11 +2189,13 @@ export default function RecurringPage() {
                             }`}
                           >
                             {isPast
-                              ? "Overdue"
+                              ? nextDate.toDateString() === new Date().toDateString()
+                                ? "Due today"
+                                : "Overdue"
                               : formatDistanceToNow(nextDate, { addSuffix: true })}
                           </span>
                         </div>
-                      )}
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <Button

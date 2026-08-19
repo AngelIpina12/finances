@@ -102,8 +102,6 @@ function formatBillingCycleInfo(info: BillingCycleInfo): string {
   const netOwed = parseFloat(info.netOwed) || 0;
   const owedAmount = parseFloat(info.owedAmount) || 0;
   const byTermMonthly = parseFloat(info.byTermMonthlyPayment) || 0;
-  const previousCycleBalance = parseFloat(info.previousCycleBalance) || 0;
-  const isShowingPreviousCycle = info.isShowingPreviousCycle;
 
   const lines = [
     `📅 Ciclo: ${formatDate(info.cycleStart)} - ${formatDate(info.cycleEnd)}`,
@@ -128,16 +126,8 @@ function formatBillingCycleInfo(info: BillingCycleInfo): string {
     `💰 Total ocupado: ${formatCurrency(totalOccupied.toString(), info.currency)}`
   );
 
-  // When showing previous cycle balance (unpaid from last cycle)
-  if (isShowingPreviousCycle && previousCycleBalance > 0) {
-    lines.push(
-      ``,
-      `⚠️ Saldo pendiente del ciclo anterior: ${formatCurrency(previousCycleBalance.toString(), info.currency)}`
-    );
-  }
-
-  // Total to pay this month = regular charges + by_term monthly payment OR previous cycle balance if showing it
-  const totalToPay = isShowingPreviousCycle ? previousCycleBalance : netOwed + byTermMonthly;
+  // Total to pay this month = regular charges + by_term monthly payment
+  const totalToPay = netOwed + byTermMonthly;
   lines.push(
     `📊 Total a pagar este mes: ${formatCurrency(totalToPay.toFixed(2), info.currency)}`
   );
@@ -949,9 +939,7 @@ export default function AccountsPage() {
                                 <PopoverTrigger asChild>
                                   <span className="cursor-help underline decoration-dotted font-medium">
                                     {formatCurrency(
-                                      billingCycles[account.id].isShowingPreviousCycle
-                                        ? billingCycles[account.id].previousCycleBalance
-                                        : (parseFloat(billingCycles[account.id].netOwed) + parseFloat(billingCycles[account.id].byTermMonthlyPayment)).toString(),
+                                      (parseFloat(billingCycles[account.id].netOwed) + parseFloat(billingCycles[account.id].byTermMonthlyPayment)).toString(),
                                       account.currency
                                     )}
                                   </span>
